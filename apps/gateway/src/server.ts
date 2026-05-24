@@ -14,6 +14,7 @@ import {
 } from './conversations.js'
 import { createDatabaseClient } from './db/client.js'
 import { createDeepSeekModelProvider, ModelProvider, ModelProviderError } from './model.js'
+import { createDeepSeekIntentRouter, IntentRouter, shouldAskRouteFollowUp } from './router.js'
 
 const GATEWAY_VERSION = '0.1.0'
 const createConversationSchema = z
@@ -32,6 +33,7 @@ const appendMessageSchema = z
 
 type BuildServerOptions = {
   modelProvider?: ModelProvider
+  intentRouter?: IntentRouter
 }
 
 function sendHostTokenError(reply: FastifyReply, error: HostTokenError) {
@@ -56,6 +58,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
   })
   const { db, pool } = createDatabaseClient(config)
   const modelProvider = options.modelProvider ?? createDeepSeekModelProvider(config)
+  const intentRouter = options.intentRouter ?? createDeepSeekIntentRouter(config)
 
   server.register(cors, {
     origin: true
@@ -207,6 +210,29 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         connection: 'keep-alive',
         'content-type': 'text/event-stream; charset=utf-8'
       })
+
+      const route = await intentRouter.route({
+        latestMessage: parsedBody.data.content,
+        messages: history.map((message) => ({
+          role: message.role,
+          content: message.content
+        }))
+      })
+
+      reply.raw.write(`event: route\ndata: ${JSON.stringify(route)}\n\n`)
+
+      if (shouldAskRouteFollowUp(route)) {
+        const followUpMessage = '我还不能稳定判断你的意图。你是想普通咨询，还是想检查 gateway 的状态？'
+
+        await appendAssistantMessage(db, identity, params.conversationId, {
+          content: followUpMessage
+        })
+
+        reply.raw.write(`data: ${JSON.stringify({ delta: followUpMessage })}\n\n`)
+        reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
+        reply.raw.end()
+        return reply
+      }
 
       let assistantContent = ''
 
