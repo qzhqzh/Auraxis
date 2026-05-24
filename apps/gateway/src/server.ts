@@ -1,10 +1,29 @@
 import cors from '@fastify/cors'
 import Fastify from 'fastify'
+import type { FastifyReply } from 'fastify'
+import { z } from 'zod'
 
 import { HostTokenError, authenticateHostRequest } from './auth.js'
 import type { AppConfig } from './config.js'
+import { createConversation, getConversationMessages, listConversations } from './conversations.js'
+import { createDatabaseClient } from './db/client.js'
 
 const GATEWAY_VERSION = '0.1.0'
+const createConversationSchema = z
+  .object({
+    pageTitle: z.string().min(1).optional(),
+    sourceUrl: z.string().url().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    initialMessage: z.string().min(1).optional()
+  })
+  .strict()
+
+function sendHostTokenError(reply: FastifyReply, error: HostTokenError) {
+  return reply.status(error.statusCode).send({
+    error: error.code,
+    message: error.message
+  })
+}
 
 export function buildServer(config: AppConfig) {
   const server = Fastify({
@@ -12,9 +31,14 @@ export function buildServer(config: AppConfig) {
       level: config.logLevel
     }
   })
+  const { db, pool } = createDatabaseClient(config)
 
   server.register(cors, {
     origin: true
+  })
+
+  server.addHook('onClose', async () => {
+    await pool.end()
   })
 
   server.get('/', async () => ({
@@ -38,10 +62,75 @@ export function buildServer(config: AppConfig) {
       }
     } catch (error) {
       if (error instanceof HostTokenError) {
-        return reply.status(error.statusCode).send({
-          error: error.code,
-          message: error.message
+        return sendHostTokenError(reply, error)
+      }
+
+      throw error
+    }
+  })
+
+  server.post('/v1/conversations', async (request, reply) => {
+    try {
+      const identity = authenticateHostRequest(request, config)
+      const parsedBody = createConversationSchema.safeParse(request.body ?? {})
+
+      if (!parsedBody.success) {
+        return reply.status(400).send({
+          error: 'CONVERSATION_CREATE_INVALID',
+          message: 'Conversation payload is invalid.'
         })
+      }
+
+      const conversation = await createConversation(db, identity, parsedBody.data)
+
+      return reply.status(201).send({
+        conversation
+      })
+    } catch (error) {
+      if (error instanceof HostTokenError) {
+        return sendHostTokenError(reply, error)
+      }
+
+      throw error
+    }
+  })
+
+  server.get('/v1/conversations', async (request, reply) => {
+    try {
+      const identity = authenticateHostRequest(request, config)
+      const conversations = await listConversations(db, identity)
+
+      return {
+        conversations
+      }
+    } catch (error) {
+      if (error instanceof HostTokenError) {
+        return sendHostTokenError(reply, error)
+      }
+
+      throw error
+    }
+  })
+
+  server.get('/v1/conversations/:conversationId/messages', async (request, reply) => {
+    try {
+      const identity = authenticateHostRequest(request, config)
+      const params = request.params as { conversationId: string }
+      const messages = await getConversationMessages(db, identity, params.conversationId)
+
+      if (!messages) {
+        return reply.status(404).send({
+          error: 'CONVERSATION_NOT_FOUND',
+          message: 'Conversation was not found.'
+        })
+      }
+
+      return {
+        messages
+      }
+    } catch (error) {
+      if (error instanceof HostTokenError) {
+        return sendHostTokenError(reply, error)
       }
 
       throw error
