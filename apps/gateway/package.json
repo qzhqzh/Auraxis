@@ -13,7 +13,7 @@
     "db:generate": "drizzle-kit generate --config ../../drizzle.config.ts",
     "db:migrate": "drizzle-kit migrate --config ../../drizzle.config.ts",
     "db:smoke": "bun src/db/smoke.ts",
-    "test": "bun test ./test/auth.test.ts"
+    "test": "bun test ./test"
   },
   "dependencies": {
     "@auraxis/shared": "workspace:*",
