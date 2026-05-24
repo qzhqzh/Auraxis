@@ -14,7 +14,8 @@
     "typecheck": "bun --cwd packages/shared typecheck && bun --cwd packages/vue typecheck && bun --cwd apps/gateway typecheck",
     "db:generate": "bun --cwd apps/gateway db:generate",
     "db:migrate": "bun --cwd apps/gateway db:migrate",
-    "db:smoke": "bun --cwd apps/gateway db:smoke"
+    "db:smoke": "bun --cwd apps/gateway db:smoke",
+    "test:gateway": "bun --cwd apps/gateway test"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

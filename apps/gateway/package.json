@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate --config ../../drizzle.config.ts",
     "db:migrate": "drizzle-kit migrate --config ../../drizzle.config.ts",
-    "db:smoke": "bun src/db/smoke.ts"
+    "db:smoke": "bun src/db/smoke.ts",
+    "test": "bun test ./test/auth.test.ts"
   },
   "dependencies": {
     "@auraxis/shared": "workspace:*",
