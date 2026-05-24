@@ -2,140 +2,230 @@
 
 ## 1. 项目定位
 
-Auraxis 是一个可嵌入任意前端系统的智能客服助手运行时。第一阶段面向客服问答、业务信息查询和历史对话记录分析；后续逐步扩展到工单创建、用户确认后的数据修改、MCP 工具调用、多业务系统接入与运营分析。
+Auraxis 是一个可嵌入业务前端的智能客服助手运行时。第一版只面向 Vue 系统，目标是先完成一个可安装、可对话、可识别意图并调用受控工具的最小闭环。
 
-核心目标不是做一个单纯聊天框，而是提供一套可复用的 AI Assistant Runtime：
+长期目标仍然是 AI Assistant Runtime，但第一版不做通用前端 SDK、截图、工单、MCP、数据修改和完整运营后台。
 
-- 可挂载到 Vue、React、原生 HTML 或 iframe 场景。
-- 后端统一接入 DeepSeek API。
-- 支持对话状态管理、意图推测、实体抽取、工具调用和审计。
-- 初期工具以只读查询为主，避免 AI 直接修改业务数据。
-- 后续通过用户确认、权限校验和审计日志支持数据变更。
+第一版核心目标：
 
-## 2. 总体架构
+- Vue 项目可以快速安装并挂载助手组件。
+- 用户在原系统登录后，助手能识别不同用户并隔离会话。
+- 助手支持 DeepSeek 流式对话。
+- 助手能识别一个测试意图，调用一个后端注册的示例脚本工具，并把结果返回给用户。
+- 所有模型请求、工具调用和关键错误都有日志，方便调试。
+
+系统边界：
+
+- 前端 Widget 只负责交互展示，不做复杂 AI 编排。
+- DeepSeek 只负责推理和语言生成，不直接访问数据库或执行业务动作。
+- 工具执行权永远在 Auraxis Gateway 后端，不交给模型。
+- 第一版工具只允许只读或测试类动作，不做 create_ticket、数据修改、批量操作和删除。
+
+## 2. 外部架构参考与取舍
+
+当前主流 agent 架构的共同点不是“让模型完全自治”，而是把模型放进一个可控运行时里：有明确状态、有工具权限、有审计、有失败恢复边界。
+
+参考资料：
+
+- [Anthropic: Building effective agents](https://www.anthropic.com/engineering/building-effective-agents) 强调先使用简单、可组合的 workflow，只有在确实需要模型动态决策时再增加 agent 复杂度。
+- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) 的关键经验是：子代理要职责单一，并且每个代理只给必要工具权限。
+- [Claude Agent SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions) 的关键经验是：工具调用需要 allow / deny / runtime approval 这类权限闸门。
+- [LangGraph durable execution](https://docs.langchain.com/oss/python/langgraph/durable-execution) 的关键经验是：长流程和人工确认需要 checkpoint、thread_id、幂等和可恢复执行。
+- [OpenAI Agents SDK tracing](https://openai.github.io/openai-agents-python/tracing/) 的关键经验是：LLM 调用、工具调用、handoff、guardrail 都应该能 trace。
+- [OpenAI Agents SDK guardrails](https://openai.github.io/openai-agents-python/guardrails/) 的关键经验是：输入、输出、工具调用都可以有 guardrail，工具 guardrail 应该贴近每个工具本身。
+- [Model Context Protocol](https://github.com/modelcontextprotocol/modelcontextprotocol) 适合作为后续连接外部工具和系统的标准协议，但不应成为第一版的核心复杂度。
+- [DeepSeek API Docs](https://api-docs.deepseek.com/) 当前支持 OpenAI/Anthropic 兼容 API。DeepSeek 文档显示 `deepseek-chat` 和 `deepseek-reasoner` 将在 2026-07-24 废弃，第一版不要硬编码旧模型名，默认用可配置的 `deepseek-v4-flash` 或 `deepseek-v4-pro`。
+
+对 Auraxis 的取舍：
+
+- 第一版采用“受控 agentic workflow”，不是全自治 agent。
+- 不引入大型 agent framework 作为核心依赖，先用清晰的自研 Orchestrator 实现可观测、可调试的最小闭环。
+- 借鉴 LangGraph 的状态/trace/checkpoint 思路，但第一版只实现轻量状态表和 trace_id，不做复杂图执行引擎。
+- 借鉴 Claude Code 的权限模型：模型可以提出工具候选，最终执行必须经过后端 policy gate。
+- MCP 作为第二阶段之后的工具接入方式，第一版只实现 Internal Tool Runtime 和一个注册脚本工具。
+
+## 3. 技术栈决策
+
+推荐第一版技术栈：
+
+- 前端：Vue 3 + Vite + TypeScript。
+- 包管理：bun。
+- 后端：Node.js 22 + TypeScript + Fastify。
+- 数据库：PostgreSQL。
+- ORM / SQL：Drizzle ORM。
+- 流式输出：SSE 优先，WebSocket 后续按需要补。
+- LLM：DeepSeek Chat Completions，通过 `ModelProvider` 适配层访问。
+- Schema：Zod 作为代码内校验源，必要时导出 JSON Schema 给工具注册和模型工具描述。
+- 本地开发：docker-compose，数据库数据用 bind mount，不用 docker volume。
+
+选型理由：
+
+- Vue 前端和 Gateway 后端都用 TypeScript，减少上下文切换。
+- Fastify 足够轻，适合流式接口、插件化中间件和 schema 校验。
+- Drizzle 比完整重型 ORM 更贴近 SQL，后续排查权限、会话、工具调用日志会更直接。
+- 第一版流程简单，直接调用 DeepSeek API 比引入 LangGraph / Agents SDK 更容易调试。
+
+暂不选择：
+
+- Python + FastAPI + LangGraph：适合复杂长流程，但第一版会增加语言栈和框架复杂度。
+- NestJS：结构强，但第一版偏重，容易提前引入过多模块边界。
+- 完整 MCP Runtime：方向正确，但第一版只需要验证一个内置脚本工具。
+
+## 4. 总体架构
 
 ```text
-任意业务前端 / Vue 项目
+原有 Vue 业务系统
   ↓
-Assistant Widget SDK / Web Component / iframe
+@auraxis/vue 组件
   ↓
-Assistant Gateway
+Auraxis Gateway API / SSE
   ↓
-DeepSeek Adapter + Tool Runtime + MCP Client
+Auth & App Resolver
   ↓
-业务系统 API / MCP Servers / 数据库 / 知识库 / 工单系统
+Conversation Service
+  ↓
+Agent Orchestrator
+  ├── Router: 意图识别
+  ├── Policy Gate: 工具权限和风险校验
+  ├── Tool Runtime: 内置工具 / 注册脚本
+  ├── Model Provider: DeepSeek
+  └── Trace Logger: 消息、工具、错误、耗时
+  ↓
+PostgreSQL / 业务 API / 受控脚本
 ```
 
-后端的 Assistant Gateway 是系统核心。DeepSeek 只负责推理和语言生成，不能直接操作业务数据库。所有业务查询、权限判断、数据修改、日志记录都必须由后端控制。
+Agent Orchestrator 第一版固定流程：
 
-## 3. 前端接入设计
+1. 读取 app、用户、会话和页面上下文。
+2. 写入用户 Message。
+3. 规则预判是否命中测试脚本意图。
+4. 未命中时调用 DeepSeek Router，要求输出结构化 JSON。
+5. Router 给出 intent、confidence、candidate_tools。
+6. Policy Gate 校验 app 是否启用该工具、用户是否有权限、工具风险等级是否允许。
+7. Tool Runtime 执行工具，记录 ToolCall。
+8. Response Composer 调用 DeepSeek 生成面向用户的回复，或直接把工具结果格式化返回。
+9. 通过 SSE 返回流式内容。
+10. 写入 assistant Message 和 trace。
 
-### 3.1 Vue 优先兼容
+第一版不做多代理并行。后续可以拆出 Router Agent、Tool Agent、Summary Agent、Support Analyst Agent，但每个代理必须有独立 prompt、工具权限和 trace。
 
-当前项目重点兼容 Vue 前端。建议提供两个形态：
+## 5. 前端接入设计
 
-1. Vue 组件：适合自有系统深度集成。
-2. Web Component / JS SDK：适合未来挂载到任意前端。
+### 5.1 第一版只支持 Vue
 
-Vue 使用方式示例：
+第一版只提供 Vue 组件包：
 
 ```vue
 <template>
   <AuraxisAssistant
     app-id="clinical-report"
-    :user="currentUser"
+    :get-auth-token="getAuraxisToken"
     :page-context="pageContext"
-    :enable-screenshot="true"
+    position="bottom-right"
   />
 </template>
 ```
 
-SDK 使用方式示例：
+宿主系统需要提供 `getAuraxisToken`：
 
-```html
-<script src="https://cdn.example.com/auraxis-widget.js"></script>
-<script>
-  Auraxis.init({
-    appId: 'clinical-report',
-    userId: 'u_001',
-    token: 'temporary-user-token',
-    position: 'bottom-right',
-    enableScreenshot: true
-  })
-</script>
-```
-
-### 3.2 前端 Widget 责任边界
-
-前端 Widget 只负责交互和展示，不负责复杂 AI 编排。
-
-主要能力：
-
-- 聊天气泡与聊天窗口。
-- 文本输入、快捷问题、附件上传。
-- SSE 或 WebSocket 流式接收回复。
-- 展示 Markdown、卡片、表格、表单、确认操作卡片。
-- 获取当前页面 URL、标题、路由参数和页面上下文。
-- 可选获取当前屏幕截图。
-- 通过 postMessage 或事件系统和宿主页面交互。
-
-## 4. 当前屏幕截图能力
-
-### 4.1 需求价值
-
-屏幕截图能力适合客服排障场景，例如：
-
-- 用户说“这个页面报错了”，助手可以结合截图理解问题。
-- 用户不会描述具体按钮或位置时，截图可以补充上下文。
-- 客服后台可以把截图和对话绑定，辅助人工接管。
-
-### 4.2 实现方式
-
-建议第一版使用前端截图库，例如 html2canvas，将当前页面渲染为图片，再上传到后端。
-
-```text
-用户点击截图按钮
-  ↓
-Widget 调用截图能力
-  ↓
-生成 PNG / JPEG / WebP
-  ↓
-上传到 Assistant Gateway
-  ↓
-作为 Message Attachment 存储
-  ↓
-AI 对话时引用截图摘要或图片链接
-```
-
-### 4.3 设计注意事项
-
-- 截图必须由用户主动触发，默认不自动截图。
-- 截图前需要提示用户可能包含敏感信息。
-- 支持用户裁剪或确认后再上传。
-- 对跨域 iframe、canvas、视频区域可能无法完整截图，需要降级处理。
-- 后端保存截图时应绑定 conversation_id、message_id、user_id、source_url。
-- 长期存储需要设置过期策略，避免敏感图片无限保留。
-
-### 4.4 截图消息结构
-
-```json
-{
-  "type": "screenshot",
-  "conversation_id": "conv_001",
-  "message_id": "msg_001",
-  "file_url": "https://cdn.example.com/screenshots/xxx.png",
-  "source_url": "https://app.example.com/report/123",
-  "viewport": {
-    "width": 1440,
-    "height": 900,
-    "device_pixel_ratio": 2
-  }
+```ts
+async function getAuraxisToken() {
+  const res = await fetch('/api/auraxis/token')
+  return await res.text()
 }
 ```
 
-## 5. 对话状态管理
+后续阶段再考虑：
 
-### 5.1 Conversation
+- Web Component。
+- iframe 模式。
+- React 包。
+- CDN 方式 JS SDK。
+
+### 5.2 前端 Widget 责任边界
+
+第一版能力：
+
+- 聊天气泡与聊天窗口。
+- 文本输入。
+- SSE 流式接收回复。
+- Markdown 文本展示。
+- 当前页面 URL、标题、路由参数和业务页面上下文透传。
+- 会话列表最小能力：当前用户能恢复自己的最近会话。
+
+第一版不做：
+
+- 截图。
+- 附件上传。
+- 表单确认卡片。
+- 工单卡片。
+- 复杂后台客服工作台。
+
+## 6. 鉴权与原系统账号关系
+
+鉴权本质上是 Auraxis 和原有业务系统之间确认“当前使用助手的人是谁、属于哪个应用、拥有哪些权限”。
+
+第一版不要求 Auraxis 自己做登录系统，也不保存原系统密码。生产接入时，用户仍然先登录原有业务系统，原系统后端再给前端签发一个短期 Auraxis token。
+
+推荐流程：
+
+```text
+用户登录原有业务系统
+  ↓
+原系统前端加载 Auraxis Vue 组件
+  ↓
+组件调用原系统后端 /api/auraxis/token
+  ↓
+原系统后端生成短期 signed host token
+  ↓
+组件带 token 请求 Auraxis Gateway
+  ↓
+Auraxis Gateway 校验签名、app_id、过期时间、issuer
+  ↓
+映射为 AssistantUserIdentity
+```
+
+token 建议包含：
+
+```json
+{
+  "app_id": "clinical-report",
+  "external_user_id": "u_001",
+  "display_name": "张三",
+  "tenant_id": "hospital_a",
+  "roles": ["report_viewer"],
+  "permissions": ["assistant:chat", "tool:demo.check_status"],
+  "iat": 1780000000,
+  "exp": 1780000300,
+  "issuer": "clinical-report-system"
+}
+```
+
+关键原则：
+
+- 生产环境需要原系统账号或至少稳定的 `external_user_id`，否则无法做多用户隔离和审计。
+- Auraxis 不接收原系统密码，不直接复用原系统 cookie。
+- token 必须短期有效，建议 5 到 15 分钟。
+- Gateway 每次工具调用都要重新检查 app、user、permission，不只在建立会话时检查一次。
+- 开发模式可以支持匿名 `visitor_id`，但只能访问 demo app 和 demo tool。
+- 如果原系统没有后端，只能做匿名体验版，不适合接入业务工具。
+
+第一版 AssistantUserIdentity：
+
+```ts
+type AssistantUserIdentity = {
+  appId: string
+  externalUserId: string
+  tenantId?: string
+  displayName?: string
+  roles: string[]
+  permissions: string[]
+}
+```
+
+## 7. 对话与状态管理
+
+### 7.1 Conversation
 
 Conversation 表示一次完整会话。
 
@@ -143,15 +233,18 @@ Conversation 表示一次完整会话。
 
 - id
 - app_id
-- user_id
+- tenant_id
+- external_user_id
 - visitor_id
 - source_url
-- status: open / waiting / resolved / handoff / closed
+- page_title
+- status: open / resolved / closed
 - summary
+- trace_id
 - created_at
 - updated_at
 
-### 5.2 Message
+### 7.2 Message
 
 Message 记录用户、助手、系统和工具消息。
 
@@ -161,345 +254,456 @@ Message 记录用户、助手、系统和工具消息。
 - conversation_id
 - role: user / assistant / system / tool
 - content
-- content_type: text / card / form / image / file / screenshot
+- content_type: text / tool_result / error
 - structured_payload
 - metadata
 - token_usage
 - model_name
+- trace_id
 - created_at
 
-### 5.3 ConversationState
+### 7.3 ConversationState
 
 ConversationState 记录当前对话进度，避免每次都依赖完整历史消息。
 
-示例：
-
 ```json
 {
-  "current_intent": "query_report_status",
-  "stage": "waiting_for_report_id",
-  "entities": {
-    "report_id": null
-  },
-  "slots": {
-    "report_id": {
-      "required": true,
-      "value": null
-    }
-  },
-  "pending_action_id": null,
-  "confidence": 0.78
+  "current_intent": "demo_check_status",
+  "stage": "answered",
+  "entities": {},
+  "pending_tool_call_id": null,
+  "confidence": 0.91
 }
 ```
 
-## 6. 意图推测与路由
+第一版只保存必要状态，不做长期用户记忆。
 
-意图识别建议采用多层机制，而不是完全依赖一次大模型自由回答。
+## 8. 意图推测与路由
+
+第一版采用规则 + LLM Router 的组合。
 
 ```text
 用户输入
   ↓
-规则预判
+轻量规则匹配
   ↓
-DeepSeek Router Call
+DeepSeek Router JSON 输出
   ↓
-实体抽取与置信度判断
+置信度判断
   ↓
-权限判断
+Policy Gate
   ↓
-工具选择或普通回答
+普通回答或工具调用
 ```
 
-第一阶段支持的意图：
+第一版意图：
 
-- faq_answer：常见问题回答。
-- business_query：业务信息查询。
-- troubleshooting：问题排查。
-- create_ticket：创建工单。
-- summarize_history：总结历史对话。
-- handoff_human：转人工。
-- smalltalk：普通闲聊。
+- general_chat：普通客服问答或闲聊。
+- demo_check_status：测试脚本工具意图。
 - unknown：无法判断。
 
-Router Call 输出建议固定为 JSON：
+第二阶段再增加：
+
+- business_query。
+- troubleshooting。
+- summarize_history。
+- create_ticket。
+- handoff_human。
+
+Router 输出：
 
 ```json
 {
-  "intent": "business_query",
+  "intent": "demo_check_status",
   "entities": {
-    "sample_id": "S20260523001"
+    "target": "gateway"
   },
-  "confidence": 0.91,
+  "confidence": 0.92,
   "requires_tool": true,
-  "candidate_tools": ["sample.get_status"]
+  "candidate_tools": ["demo.check_status"]
 }
 ```
 
-## 7. 工具扩展机制
+Router 规则：
 
-### 7.1 工具系统目标
+- confidence 低于阈值时不执行工具，先追问。
+- candidate_tools 只是模型建议，不是执行授权。
+- 工具参数必须由后端 schema 校验通过后才能执行。
+- 模型输出 JSON 失败时降级为普通对话或追问，不直接执行任何工具。
 
-工具系统必须具备扩展性。第一阶段主要做只读查询，后续扩展到创建、修改和复杂工作流。
+## 9. 工具扩展机制
 
-工具不应该暴露裸 SQL，也不应该让 AI 直接访问数据库。工具应该是业务语义能力，例如：
+### 9.1 工具系统目标
 
-- sample.get_status
-- report.get_detail
-- ticket.search
-- knowledge.search
-- pipeline.get_error_summary
+工具是后端注册的业务能力，不是模型自由生成的代码。
 
-### 7.2 工具注册表
+第一版只实现：
 
-建议设计 Tool Registry，用 JSON Schema 描述工具输入输出。
+- Internal Tool Runtime。
+- 一个注册脚本工具。
+- read_only / diagnostic 风险等级。
+- ToolCall 日志。
+
+后续再增加：
+
+- create_ticket 作为 create 风险等级工具。
+- update / destructive 工具。
+- PendingAction 用户确认。
+- MCP Client。
+
+### 9.2 ToolDefinition
+
+工具定义必须同时服务模型、后端校验和审计。
 
 ```json
 {
-  "name": "report.get_detail",
-  "type": "internal",
-  "description": "查询报告详情，只读工具",
-  "risk_level": "read_only",
+  "name": "demo.check_status",
+  "version": "1.0.0",
+  "type": "script",
+  "description": "运行受控的系统状态检查脚本，返回测试状态信息。",
+  "risk_level": "diagnostic",
+  "enabled": true,
+  "required_permissions": ["tool:demo.check_status"],
+  "timeout_ms": 5000,
+  "max_output_chars": 4000,
   "input_schema": {
     "type": "object",
     "properties": {
-      "report_id": {
-        "type": "string"
+      "target": {
+        "type": "string",
+        "enum": ["gateway", "database", "demo"]
       }
     },
-    "required": ["report_id"]
-  }
+    "required": ["target"],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "ok": { "type": "boolean" },
+      "target": { "type": "string" },
+      "summary": { "type": "string" },
+      "details": { "type": "object" }
+    },
+    "required": ["ok", "target", "summary"]
+  },
+  "examples": [
+    {
+      "user": "帮我检查一下系统状态",
+      "input": { "target": "gateway" }
+    }
+  ]
 }
 ```
 
-### 7.3 工具风险分级
+### 9.3 ToolCall
 
-- read_only：只读查询，可直接执行。
-- create：创建数据，例如创建工单，需要记录日志。
-- update：修改数据，必须用户确认。
-- destructive：删除或批量操作，需要强确认和管理员权限。
+每次工具调用都要记录。
 
-第一版只实现 read_only 和少量 create。
+建议字段：
 
-## 8. MCP 与内置工具的关系
+- id
+- conversation_id
+- message_id
+- trace_id
+- app_id
+- tenant_id
+- external_user_id
+- tool_name
+- tool_version
+- risk_level
+- input
+- output
+- status: pending / running / succeeded / failed / denied / timeout
+- error_code
+- error_message
+- duration_ms
+- created_at
+- finished_at
 
-MCP 和内置工具不冲突，建议保留双轨能力。
+### 9.4 Policy Gate
 
-### 8.1 双轨模型
+工具执行前必须经过 Policy Gate。
+
+校验项：
+
+- 工具是否存在。
+- 工具是否启用。
+- 当前 app 是否允许使用该工具。
+- 当前用户 token 是否包含 required_permissions。
+- risk_level 是否允许自动执行。
+- input 是否通过 schema 校验。
+- 是否超过 rate limit。
+- 是否超过并发限制。
+
+第一版自动执行范围：
+
+- read_only。
+- diagnostic。
+
+第一版拒绝范围：
+
+- create。
+- update。
+- destructive。
+- 未注册工具。
+- 模型生成的任意 shell 命令。
+
+### 9.5 Script Tool 规则
+
+示例脚本工具用于验证“识别意图 -> 执行工具 -> 返回结果”的闭环，但不能变成任意命令执行器。
+
+规则：
+
+- 脚本必须在 ToolDefinition 中注册。
+- 模型只能选择工具名和结构化参数，不能生成命令行。
+- 后端用固定 command、固定 cwd、固定 env allowlist 执行脚本。
+- 参数只通过 JSON schema 传入，不拼接未经校验的字符串。
+- 设置 timeout、max_output_chars、max_stderr_chars。
+- stdout / stderr 都要截断后入库。
+- exit code 非 0 时返回工具失败，不让模型宣称成功。
+
+第一版示例：
 
 ```text
-Tool Runtime
-├── Internal Tools：系统内置工具，直接调用 Django Service 或内部 API
-└── MCP Tools：通过 MCP Client 调用外部 MCP Server
+用户：“帮我检查一下助手服务状态”
+  ↓
+Router: intent=demo_check_status, candidate_tools=["demo.check_status"]
+  ↓
+Policy Gate: permission ok, risk diagnostic
+  ↓
+Tool Runtime: 执行 scripts/demo_check_status
+  ↓
+ToolCall: succeeded
+  ↓
+Assistant: “检查完成，Gateway 正常，数据库连接正常。”
 ```
 
-AI 不应该随意选择不可控工具。后端需要根据意图、权限、风险等级和工具可用性做最终路由。
+## 10. DeepSeek 接入层
 
-### 8.2 工具选择原则
-
-建议规则：
-
-1. 同一个业务能力如果内置工具更稳定，优先内置工具。
-2. MCP 用于连接外部系统、知识库、文件系统或跨项目工具。
-3. 查询类能力可以同时开放 internal 和 MCP，但需要统一返回格式。
-4. 修改类能力必须经过后端 PendingAction 和权限校验，不能直接由 MCP 执行最终变更。
-
-### 8.3 是否让 AI 自选工具
-
-可以让 AI 提出 candidate_tools，但最终执行权在后端。
-
-```text
-AI 建议调用工具
-  ↓
-Tool Orchestrator 校验工具是否存在、是否启用、用户是否有权限、风险等级是否允许
-  ↓
-执行工具或要求用户确认
-```
-
-这样既保留 AI 的灵活性，也避免工具调用失控。
-
-## 9. DeepSeek 接入层
-
-DeepSeek API 应该通过 Model Adapter 间接调用，避免业务代码绑定具体模型。
+DeepSeek API 通过 ModelProvider 间接调用，避免业务代码绑定具体模型。
 
 职责：
 
 - API Key 管理。
 - 模型选择。
-- 流式输出。
+- OpenAI/Anthropic 兼容 API 适配。
+- SSE 流式输出。
 - 超时、重试和错误处理。
 - JSON 输出校验。
 - token 统计。
 - prompt 模板版本管理。
+- trace_id 注入。
 
-建议抽象：
+建议接口：
 
-```python
-class LLMProvider:
-    def chat(self, messages, tools=None, stream=False):
-        raise NotImplementedError
+```ts
+type ModelMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+}
 
-class DeepSeekProvider(LLMProvider):
-    pass
-```
-
-## 10. 数据修改与确认机制
-
-后续支持数据修改时，必须使用 PendingAction。
-
-```text
-用户提出修改诉求
-  ↓
-AI 识别意图和目标数据
-  ↓
-后端查询当前状态
-  ↓
-生成修改计划
-  ↓
-前端展示确认卡片
-  ↓
-用户确认
-  ↓
-后端权限校验
-  ↓
-执行业务服务
-  ↓
-记录审计日志
-  ↓
-回复执行结果
-```
-
-AI 不能直接宣称修改成功。最终回复必须以后端执行结果为准。
-
-PendingAction 建议字段：
-
-- id
-- conversation_id
-- user_id
-- action_type
-- target_type
-- target_id
-- before_data
-- after_data
-- status: pending / confirmed / cancelled / executed / failed
-- risk_level
-- expires_at
-- created_at
-- confirmed_at
-- executed_at
-
-## 11. 历史对话记录分析
-
-历史分析分三层：
-
-### 11.1 单次会话摘要
-
-会话结束后生成摘要，包括：
-
-- 用户问题。
-- 主要意图。
-- 涉及实体。
-- 是否解决。
-- 调用过哪些工具。
-- 是否需要人工跟进。
-
-### 11.2 用户级记忆
-
-记录用户偏好，但不要把业务事实写入 AI 记忆。
-
-例如：
-
-```json
-{
-  "reply_style": "简短直接",
-  "technical_level": "developer",
-  "frequent_topics": ["报告查询", "流程排障", "工单创建"]
+type ModelProvider = {
+  streamChat(input: {
+    model: string
+    messages: ModelMessage[]
+    responseFormat?: 'text' | 'json'
+    traceId: string
+    userId?: string
+  }): AsyncIterable<string>
 }
 ```
 
-### 11.3 全局客服运营分析
+第一版默认模型配置放在环境变量，不写死在代码里：
 
-统计：
+- `DEEPSEEK_API_KEY`
+- `DEEPSEEK_BASE_URL`
+- `DEEPSEEK_MODEL`
 
-- 高频问题。
-- 未解决问题。
-- 转人工比例。
-- 平均解决时间。
-- 工具调用成功率。
-- 常见错误。
-- 知识库缺口。
+## 11. MVP 边界
 
-## 12. 推荐核心数据表
+### 11.1 第一版包含
 
-第一阶段建议至少包含：
+- `@auraxis/vue` Vue 组件。
+- Gateway API。
+- 原系统 signed host token 鉴权。
+- 多用户会话隔离。
+- Conversation / Message 存储。
+- DeepSeek 流式对话。
+- Router JSON 意图识别。
+- ToolDefinition 注册。
+- Policy Gate。
+- 一个 demo script tool。
+- ToolCall 日志。
+- trace_id 贯穿请求、模型调用和工具调用。
+- docker-compose 本地开发环境。
+
+### 11.2 第一版不做
+
+- Web Component。
+- React。
+- iframe。
+- CDN JS SDK。
+- 当前屏幕截图。
+- 附件上传。
+- create_ticket。
+- 数据修改。
+- PendingAction。
+- MCP Client。
+- 大规模知识库。
+- 完整人工客服工作台。
+- 多租户计费。
+- 复杂运营分析。
+
+### 11.3 后续阶段
+
+第二阶段：
+
+- 截图和附件上传。
+- 简单后台会话查看。
+- Conversation Summary。
+- create_ticket 工具。
+
+第三阶段：
+
+- PendingAction。
+- 用户确认卡片。
+- AuditLog。
+- update 类工具。
+
+第四阶段：
+
+- MCP Client。
+- 外部 MCP Server 接入。
+- 工具市场或工具包管理。
+- 更复杂的多代理协作。
+
+## 12. 推荐数据表
+
+第一版最小表：
 
 - AssistantApp
+- AssistantAppKey
+- AssistantUserIdentity
 - Conversation
 - Message
-- MessageAttachment
 - ConversationState
 - ToolDefinition
 - ToolCall
-- ConversationSummary
+- AgentTrace
 
 第二阶段增加：
 
+- MessageAttachment
+- ConversationSummary
+- Feedback
+
+第三阶段增加：
+
 - PendingAction
 - AuditLog
-- UserMemory
-- Feedback
 - KnowledgeDocument
+- UserMemory
 
-## 13. MVP 边界
+第一版可以不建 UserMemory。用户偏好和业务事实不要混在一起，避免后续权限和隐私问题。
 
-第一阶段目标：
+## 13. API 草案
 
-> 完成一个 Vue 可接入的智能客服助手，支持 DeepSeek 流式对话、会话记录、意图识别、只读工具查询、截图上传和后台对话查看。
+第一版 Gateway API：
 
-第一阶段包含：
+- `POST /v1/conversations`
+- `GET /v1/conversations`
+- `GET /v1/conversations/:conversationId/messages`
+- `POST /v1/conversations/:conversationId/messages:stream`
+- `GET /v1/tools`
+- `GET /v1/health`
 
-- Vue Widget。
-- Web Component 包装层。
-- Conversation / Message 存储。
-- DeepSeek API 接入。
-- Router Call 意图识别。
-- 只读 Tool Registry。
-- Internal Tool Runtime。
-- 可选 MCP Client 接口预留。
-- 当前页面截图上传。
-- ToolCall 日志。
-- Conversation Summary。
+宿主系统需要实现：
 
-第一阶段不做：
+- `GET /api/auraxis/token`
 
-- AI 直接修改业务数据。
-- 批量操作。
-- 复杂多租户计费。
-- 大规模知识库训练。
-- 完整人工客服工作台。
+Vue 组件只拿宿主系统签发的短期 token，不直接读取用户密码或业务系统 session cookie。
 
-## 14. 推荐开发顺序
+## 14. 推荐开发顺序与验证方式
 
-1. Vue Widget 基础聊天 UI。
-2. 后端 Conversation / Message API。
-3. DeepSeek Adapter 与流式回复。
-4. 意图识别 Router Call。
-5. Tool Registry 与只读内部工具。
-6. ToolCall 日志。
-7. 当前屏幕截图上传。
-8. Conversation Summary。
-9. MCP Client 预留与简单 MCP 查询工具。
-10. PendingAction 与确认卡片。
-11. 权限系统与审计日志。
-12. 后台运营分析。
+1. 建 monorepo 与 docker-compose。
+   验证方式：`bun install`、数据库容器启动、Gateway health check 通过。
 
-## 15. 核心原则
+2. 建数据库 schema 和迁移。
+   验证方式：能创建 AssistantApp、Conversation、Message、ToolDefinition、ToolCall。
 
+3. 实现 signed host token 鉴权。
+   验证方式：有效 token 通过，过期 token、错误 app_id、错误签名被拒绝。
+
+4. 实现 Conversation / Message API。
+   验证方式：两个不同用户创建的会话互相不可见。
+
+5. 实现 Vue 组件基础 UI。
+   验证方式：示例 Vue app 安装组件后能打开聊天框、发送消息、显示流式回复。
+
+6. 实现 DeepSeek ModelProvider。
+   验证方式：普通问题能通过 SSE 流式返回，Message 入库。
+
+7. 实现 Router JSON 意图识别。
+   验证方式：“检查助手状态”类问题稳定输出 `demo_check_status`。
+
+8. 实现 Tool Runtime 和 demo script tool。
+   验证方式：命中意图后执行注册脚本，返回结构化结果，ToolCall 入库。
+
+9. 实现 Policy Gate。
+   验证方式：缺少 `tool:demo.check_status` 权限时工具被拒绝，且不会执行脚本。
+
+10. 补 trace 和错误日志。
+    验证方式：一次用户请求能串起 conversation_id、message_id、trace_id、tool_call_id。
+
+## 15. 第一版验收标准
+
+第一版完成标准：
+
+- 一个已有 Vue 应用可以通过本地包或私有包安装 `@auraxis/vue`。
+- 宿主 Vue 页面挂载 `<AuraxisAssistant />` 后出现可用聊天入口。
+- 用户 A 和用户 B 使用不同 token 时，会话和消息互相隔离。
+- 普通问题能走 DeepSeek 流式回复。
+- 用户提出测试脚本相关问题时，Router 能识别意图。
+- 后端只执行注册过的 demo script tool，不执行模型生成的任意命令。
+- demo script tool 的执行结果返回给用户。
+- ToolCall 表记录工具名、输入、输出、状态、耗时和错误。
+- 无权限、过期 token、跨用户读取会话都会被拒绝。
+- 本地开发可以用 docker-compose 一键启动依赖服务。
+
+验收用例：
+
+```text
+用户 A: “帮我检查一下助手服务状态”
+期望：
+1. Router 输出 demo_check_status。
+2. Policy Gate 允许 demo.check_status。
+3. scripts/demo_check_status 被执行。
+4. 用户看到脚本结果。
+5. ToolCall 状态为 succeeded。
+6. 用户 B 看不到用户 A 的会话。
+```
+
+## 16. 核心原则
+
+- 第一版只做 Vue，不做通用前端形态。
+- 第一版只做受控工具，不做 create_ticket 和数据修改。
 - 模型不直接访问数据库。
-- 模型不直接执行数据修改。
+- 模型不直接执行 shell 命令。
+- 模型只提出候选工具，后端决定是否执行。
 - 工具必须结构化注册。
-- 初期工具只做只读查询。
-- MCP 与内置工具双轨共存，但统一经过 Tool Orchestrator。
-- 所有工具调用都必须记录。
-- 截图必须用户主动触发，并允许确认后上传。
-- 业务状态以业务数据库为准，AI 记忆只保存偏好和摘要。
-- 修改类操作必须经过用户确认、权限校验和审计日志。
+- 工具输入输出必须 schema 校验。
+- 所有工具调用必须记录。
+- 权限判断必须绑定 app、user、tenant 和 tool。
+- 业务状态以业务系统为准，AI 只负责解释和辅助。
+- 能用简单 workflow 解决时，不引入复杂多代理。
+
+## 17. 当前待确认问题
+
+这些问题不阻塞文档设计，但会影响第一版实现细节：
+
+1. 原有 Vue 系统是否一定有后端可以签发 `/api/auraxis/token`？
+2. Auraxis 组件是先用本地 workspace 包接入，还是需要一开始就发布到私有 npm？
+3. demo script tool 是运行在 Auraxis Gateway 容器内，还是需要调用宿主系统已有脚本？
+4. 第一版是否需要保留最小会话历史侧栏，还是只恢复当前会话即可？
+5. DeepSeek 默认模型使用 `deepseek-v4-flash` 还是 `deepseek-v4-pro`？
