@@ -273,6 +273,76 @@ export const AuraxisAssistant = defineComponent({
       activeConversationId.value = conversationId
     }
 
+    async function ensureConversation() {
+      if (activeConversationId.value) {
+        return activeConversationId.value
+      }
+
+      const runtimeContext = getRuntimePageContext(props.pageContext)
+      const payload = await request<{ conversation: Conversation }>('/v1/conversations', {
+        method: 'POST',
+        body: JSON.stringify({
+          pageTitle: typeof runtimeContext.title === 'string' ? runtimeContext.title : undefined,
+          sourceUrl: typeof runtimeContext.url === 'string' ? runtimeContext.url : undefined,
+          metadata: runtimeContext
+        })
+      })
+
+      activeConversationId.value = payload.conversation.id
+      conversations.value = [payload.conversation, ...conversations.value]
+      return payload.conversation.id
+    }
+
+    async function consumeSse(response: Response, onDelta: (delta: string) => void) {
+      if (!response.ok) {
+        const payload = await parseJson<{ message?: string }>(response)
+        throw new Error(payload.message || 'Auraxis stream failed.')
+      }
+
+      if (!response.body) {
+        throw new Error('Auraxis stream body is missing.')
+      }
+
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) {
+          break
+        }
+
+        buffer += value
+        const segments = buffer.split('\n\n')
+        buffer = segments.pop() ?? ''
+
+        for (const segment of segments) {
+          const lines = segment.split('\n').map((line) => line.trim())
+          const eventLine = lines.find((line) => line.startsWith('event:'))
+          const dataLine = lines.find((line) => line.startsWith('data:'))
+
+          if (!dataLine) {
+            continue
+          }
+
+          const data = JSON.parse(dataLine.slice(5).trim()) as {
+            delta?: string
+            error?: string
+            message?: string
+          }
+
+          if (eventLine === 'event: error') {
+            throw new Error(data.message || 'Auraxis stream failed.')
+          }
+
+          if (data.delta) {
+            onDelta(data.delta)
+          }
+        }
+      }
+    }
+
     async function bootstrap() {
       if (isBootstrapping.value || token.value) {
         return
@@ -333,38 +403,59 @@ export const AuraxisAssistant = defineComponent({
 
       isSending.value = true
       errorText.value = ''
-      statusText.value = '正在保存消息...'
+      statusText.value = '正在等待 Auraxis 回复...'
+
+      const conversationId = await ensureConversation().catch((error: unknown) => {
+        errorText.value = error instanceof Error ? error.message : '会话创建失败。'
+        return null
+      })
+
+      if (!conversationId) {
+        isSending.value = false
+        return
+      }
+
+      const now = new Date().toISOString()
+      const pendingAssistantId = `assistant-pending-${now}`
+      messages.value = [
+        ...messages.value,
+        {
+          id: `user-pending-${now}`,
+          conversationId,
+          role: 'user',
+          content,
+          createdAt: now
+        },
+        {
+          id: pendingAssistantId,
+          conversationId,
+          role: 'assistant',
+          content: '',
+          createdAt: now
+        }
+      ]
 
       try {
-        if (!activeConversationId.value) {
-          const runtimeContext = getRuntimePageContext(props.pageContext)
-          const payload = await request<{ conversation: Conversation }>('/v1/conversations', {
-            method: 'POST',
-            body: JSON.stringify({
-              pageTitle: typeof runtimeContext.title === 'string' ? runtimeContext.title : undefined,
-              sourceUrl: typeof runtimeContext.url === 'string' ? runtimeContext.url : undefined,
-              metadata: runtimeContext,
-              initialMessage: content
-            })
-          })
-
-          activeConversationId.value = payload.conversation.id
-          conversations.value = [payload.conversation, ...conversations.value]
-        } else {
-          await request<{ message: Message }>(`/v1/conversations/${activeConversationId.value}/messages`, {
-            method: 'POST',
-            body: JSON.stringify({ content })
-          })
-        }
-
         draft.value = ''
-        statusText.value = '消息已保存。'
+        const response = await fetch(`${props.apiBaseUrl}/v1/conversations/${conversationId}/messages:stream`, {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({ content })
+        })
 
-        if (activeConversationId.value) {
-          await loadMessages(activeConversationId.value)
-        }
+        await consumeSse(response, (delta) => {
+          const pending = messages.value.find((message) => message.id === pendingAssistantId)
+
+          if (pending) {
+            pending.content += delta
+          }
+        })
+
+        statusText.value = 'Auraxis 回复完成。'
+        await loadMessages(conversationId)
       } catch (error) {
         errorText.value = error instanceof Error ? error.message : '消息发送失败。'
+        await loadMessages(conversationId).catch(() => undefined)
       } finally {
         isSending.value = false
         await nextTick()
@@ -423,14 +514,14 @@ export const AuraxisAssistant = defineComponent({
                               `auraxis-assistant__bubble--${message.role}`
                             ]
                           },
-                          message.content
+                          message.content || '...'
                         )
                       )
                     : [
                         h(
                           'div',
                           { class: 'auraxis-assistant__empty' },
-                          '会话已连接。这里会显示当前用户最近会话里的消息。'
+                          '会话已连接。发送一条消息后，这里会显示流式回复。'
                         )
                       ]
                 ),
@@ -462,7 +553,7 @@ export const AuraxisAssistant = defineComponent({
                         class: 'auraxis-assistant__send',
                         disabled: isBootstrapping.value || isSending.value || !draft.value.trim()
                       },
-                      isSending.value ? '发送中' : '发送'
+                      isSending.value ? '回复中' : '发送'
                     )
                   ]
                 )

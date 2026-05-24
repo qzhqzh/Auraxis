@@ -6,12 +6,14 @@ import { z } from 'zod'
 import { HostTokenError, authenticateHostRequest } from './auth.js'
 import type { AppConfig } from './config.js'
 import {
+  appendAssistantMessage,
   appendConversationMessage,
   createConversation,
   getConversationMessages,
   listConversations
 } from './conversations.js'
 import { createDatabaseClient } from './db/client.js'
+import { createDeepSeekModelProvider, ModelProvider, ModelProviderError } from './model.js'
 
 const GATEWAY_VERSION = '0.1.0'
 const createConversationSchema = z
@@ -28,6 +30,10 @@ const appendMessageSchema = z
   })
   .strict()
 
+type BuildServerOptions = {
+  modelProvider?: ModelProvider
+}
+
 function sendHostTokenError(reply: FastifyReply, error: HostTokenError) {
   return reply.status(error.statusCode).send({
     error: error.code,
@@ -35,13 +41,21 @@ function sendHostTokenError(reply: FastifyReply, error: HostTokenError) {
   })
 }
 
-export function buildServer(config: AppConfig) {
+function sendModelProviderError(reply: FastifyReply, error: ModelProviderError) {
+  return reply.status(error.statusCode).send({
+    error: error.code,
+    message: error.message
+  })
+}
+
+export function buildServer(config: AppConfig, options: BuildServerOptions = {}) {
   const server = Fastify({
     logger: {
       level: config.logLevel
     }
   })
   const { db, pool } = createDatabaseClient(config)
+  const modelProvider = options.modelProvider ?? createDeepSeekModelProvider(config)
 
   server.register(cors, {
     origin: true
@@ -150,6 +164,87 @@ export function buildServer(config: AppConfig) {
     } catch (error) {
       if (error instanceof HostTokenError) {
         return sendHostTokenError(reply, error)
+      }
+
+      throw error
+    }
+  })
+
+  server.post('/v1/conversations/:conversationId/messages:stream', async (request, reply) => {
+    try {
+      const identity = authenticateHostRequest(request, config)
+      const params = request.params as { conversationId: string }
+      const parsedBody = appendMessageSchema.safeParse(request.body ?? {})
+
+      if (!parsedBody.success) {
+        return reply.status(400).send({
+          error: 'MESSAGE_CREATE_INVALID',
+          message: 'Message payload is invalid.'
+        })
+      }
+
+      const userMessage = await appendConversationMessage(db, identity, params.conversationId, parsedBody.data)
+
+      if (!userMessage) {
+        return reply.status(404).send({
+          error: 'CONVERSATION_NOT_FOUND',
+          message: 'Conversation was not found.'
+        })
+      }
+
+      const history = await getConversationMessages(db, identity, params.conversationId)
+
+      if (!history) {
+        return reply.status(404).send({
+          error: 'CONVERSATION_NOT_FOUND',
+          message: 'Conversation was not found.'
+        })
+      }
+
+      reply.hijack()
+      reply.raw.writeHead(200, {
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        'content-type': 'text/event-stream; charset=utf-8'
+      })
+
+      let assistantContent = ''
+
+      try {
+        for await (const chunk of modelProvider.streamChat({
+          messages: history.map((message) => ({
+            role: message.role,
+            content: message.content
+          })),
+          traceId: userMessage.traceId,
+          userId: identity.externalUserId
+        })) {
+          assistantContent += chunk
+          reply.raw.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`)
+        }
+
+        await appendAssistantMessage(db, identity, params.conversationId, {
+          content: assistantContent
+        })
+
+        reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
+      } catch (error) {
+        if (error instanceof ModelProviderError) {
+          reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: error.code, message: error.message })}\n\n`)
+        } else {
+          reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: 'MODEL_PROVIDER_STREAM_FAILED', message: 'Assistant reply failed.' })}\n\n`)
+        }
+      }
+
+      reply.raw.end()
+      return reply
+    } catch (error) {
+      if (error instanceof HostTokenError) {
+        return sendHostTokenError(reply, error)
+      }
+
+      if (error instanceof ModelProviderError) {
+        return sendModelProviderError(reply, error)
       }
 
       throw error

@@ -27,6 +27,32 @@ function matchConversationOwner(identity: AssistantUserIdentity) {
   )
 }
 
+function returningMessageShape() {
+  return {
+    id: schema.messages.id,
+    conversationId: schema.messages.conversationId,
+    role: schema.messages.role,
+    content: schema.messages.content,
+    contentType: schema.messages.contentType,
+    structuredPayload: schema.messages.structuredPayload,
+    metadata: schema.messages.metadata,
+    tokenUsage: schema.messages.tokenUsage,
+    modelName: schema.messages.modelName,
+    traceId: schema.messages.traceId,
+    createdAt: schema.messages.createdAt
+  }
+}
+
+async function ensureOwnedConversation(db: Database, identity: AssistantUserIdentity, conversationId: string) {
+  const [conversation] = await db
+    .select({ id: schema.conversations.id })
+    .from(schema.conversations)
+    .where(and(eq(schema.conversations.id, conversationId), matchConversationOwner(identity)))
+    .limit(1)
+
+  return conversation ?? null
+}
+
 export async function createConversation(
   db: Database,
   identity: AssistantUserIdentity,
@@ -95,11 +121,7 @@ export async function appendConversationMessage(
   conversationId: string,
   input: AppendMessageInput
 ) {
-  const [conversation] = await db
-    .select({ id: schema.conversations.id })
-    .from(schema.conversations)
-    .where(and(eq(schema.conversations.id, conversationId), matchConversationOwner(identity)))
-    .limit(1)
+  const conversation = await ensureOwnedConversation(db, identity, conversationId)
 
   if (!conversation) {
     return null
@@ -114,48 +136,46 @@ export async function appendConversationMessage(
       content: input.content,
       traceId
     })
-    .returning({
-      id: schema.messages.id,
-      conversationId: schema.messages.conversationId,
-      role: schema.messages.role,
-      content: schema.messages.content,
-      contentType: schema.messages.contentType,
-      structuredPayload: schema.messages.structuredPayload,
-      metadata: schema.messages.metadata,
-      tokenUsage: schema.messages.tokenUsage,
-      modelName: schema.messages.modelName,
-      traceId: schema.messages.traceId,
-      createdAt: schema.messages.createdAt
+    .returning(returningMessageShape())
+
+  return message
+}
+
+export async function appendAssistantMessage(
+  db: Database,
+  identity: AssistantUserIdentity,
+  conversationId: string,
+  input: AppendMessageInput
+) {
+  const conversation = await ensureOwnedConversation(db, identity, conversationId)
+
+  if (!conversation) {
+    return null
+  }
+
+  const traceId = randomUUID()
+  const [message] = await db
+    .insert(schema.messages)
+    .values({
+      conversationId,
+      role: 'assistant',
+      content: input.content,
+      traceId
     })
+    .returning(returningMessageShape())
 
   return message
 }
 
 export async function getConversationMessages(db: Database, identity: AssistantUserIdentity, conversationId: string) {
-  const [conversation] = await db
-    .select({ id: schema.conversations.id })
-    .from(schema.conversations)
-    .where(and(eq(schema.conversations.id, conversationId), matchConversationOwner(identity)))
-    .limit(1)
+  const conversation = await ensureOwnedConversation(db, identity, conversationId)
 
   if (!conversation) {
     return null
   }
 
   return db
-    .select({
-      id: schema.messages.id,
-      conversationId: schema.messages.conversationId,
-      role: schema.messages.role,
-      content: schema.messages.content,
-      contentType: schema.messages.contentType,
-      structuredPayload: schema.messages.structuredPayload,
-      metadata: schema.messages.metadata,
-      tokenUsage: schema.messages.tokenUsage,
-      modelName: schema.messages.modelName,
-      traceId: schema.messages.traceId,
-      createdAt: schema.messages.createdAt
-    })
+    .select(returningMessageShape())
     .from(schema.messages)
     .where(eq(schema.messages.conversationId, conversationId))
     .orderBy(asc(schema.messages.createdAt))
