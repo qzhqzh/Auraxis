@@ -94,6 +94,21 @@ test('conversation endpoints isolate data by authenticated user', async () => {
       assert.equal(createdConversation.appId, appId)
       assert.equal(createdConversation.externalUserId, 'user-a')
 
+      const appendResponse = await server.inject({
+        method: 'POST',
+        url: `/v1/conversations/${createdConversation.id}/messages`,
+        headers: {
+          authorization: `Bearer ${userAToken}`,
+          'x-auraxis-app-id': appId
+        },
+        payload: {
+          content: 'Follow up question'
+        }
+      })
+
+      assert.equal(appendResponse.statusCode, 201)
+      assert.equal(appendResponse.json().message.content, 'Follow up question')
+
       const listOwnResponse = await server.inject({
         method: 'GET',
         url: '/v1/conversations',
@@ -119,9 +134,10 @@ test('conversation endpoints isolate data by authenticated user', async () => {
 
       assert.equal(ownMessagesResponse.statusCode, 200)
       const ownMessages = ownMessagesResponse.json().messages as Array<{ role: string; content: string }>
-      assert.equal(ownMessages.length, 1)
+      assert.equal(ownMessages.length, 2)
       assert.equal(ownMessages[0]?.role, 'user')
       assert.equal(ownMessages[0]?.content, 'Check this report')
+      assert.equal(ownMessages[1]?.content, 'Follow up question')
 
       const listOtherResponse = await server.inject({
         method: 'GET',
@@ -135,6 +151,24 @@ test('conversation endpoints isolate data by authenticated user', async () => {
       assert.equal(listOtherResponse.statusCode, 200)
       assert.deepEqual(listOtherResponse.json(), {
         conversations: []
+      })
+
+      const otherAppendResponse = await server.inject({
+        method: 'POST',
+        url: `/v1/conversations/${createdConversation.id}/messages`,
+        headers: {
+          authorization: `Bearer ${userBToken}`,
+          'x-auraxis-app-id': appId
+        },
+        payload: {
+          content: 'Intrude'
+        }
+      })
+
+      assert.equal(otherAppendResponse.statusCode, 404)
+      assert.deepEqual(otherAppendResponse.json(), {
+        error: 'CONVERSATION_NOT_FOUND',
+        message: 'Conversation was not found.'
       })
 
       const otherMessagesResponse = await server.inject({

@@ -5,7 +5,12 @@ import { z } from 'zod'
 
 import { HostTokenError, authenticateHostRequest } from './auth.js'
 import type { AppConfig } from './config.js'
-import { createConversation, getConversationMessages, listConversations } from './conversations.js'
+import {
+  appendConversationMessage,
+  createConversation,
+  getConversationMessages,
+  listConversations
+} from './conversations.js'
 import { createDatabaseClient } from './db/client.js'
 
 const GATEWAY_VERSION = '0.1.0'
@@ -15,6 +20,11 @@ const createConversationSchema = z
     sourceUrl: z.string().url().optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     initialMessage: z.string().min(1).optional()
+  })
+  .strict()
+const appendMessageSchema = z
+  .object({
+    content: z.string().min(1)
   })
   .strict()
 
@@ -103,6 +113,40 @@ export function buildServer(config: AppConfig) {
       return {
         conversations
       }
+    } catch (error) {
+      if (error instanceof HostTokenError) {
+        return sendHostTokenError(reply, error)
+      }
+
+      throw error
+    }
+  })
+
+  server.post('/v1/conversations/:conversationId/messages', async (request, reply) => {
+    try {
+      const identity = authenticateHostRequest(request, config)
+      const params = request.params as { conversationId: string }
+      const parsedBody = appendMessageSchema.safeParse(request.body ?? {})
+
+      if (!parsedBody.success) {
+        return reply.status(400).send({
+          error: 'MESSAGE_CREATE_INVALID',
+          message: 'Message payload is invalid.'
+        })
+      }
+
+      const message = await appendConversationMessage(db, identity, params.conversationId, parsedBody.data)
+
+      if (!message) {
+        return reply.status(404).send({
+          error: 'CONVERSATION_NOT_FOUND',
+          message: 'Conversation was not found.'
+        })
+      }
+
+      return reply.status(201).send({
+        message
+      })
     } catch (error) {
       if (error instanceof HostTokenError) {
         return sendHostTokenError(reply, error)
