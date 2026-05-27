@@ -1,4 +1,5 @@
 import cors from '@fastify/cors'
+import { sql } from 'drizzle-orm'
 import Fastify from 'fastify'
 import type { FastifyReply } from 'fastify'
 import { z } from 'zod'
@@ -13,6 +14,7 @@ import {
   listConversations
 } from './conversations.js'
 import { createDatabaseClient } from './db/client.js'
+import * as schema from './db/schema.js'
 import { createDeepSeekModelProvider, ModelProvider, ModelProviderError } from './model.js'
 import { createDeepSeekIntentRouter, IntentRouter, shouldAskRouteFollowUp } from './router.js'
 
@@ -35,6 +37,120 @@ type BuildServerOptions = {
   modelProvider?: ModelProvider
   intentRouter?: IntentRouter
 }
+
+const systemCheckStatusTool = {
+  name: 'system.check_status',
+  version: '1.0.0',
+  type: 'internal' as const,
+  description: 'Checks Auraxis runtime status for gateway and database diagnostics.',
+  riskLevel: 'diagnostic' as const,
+  enabled: true,
+  requiredPermissions: ['tool:system.check_status'],
+  timeoutMs: 5000,
+  maxOutputChars: 4000,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      target: {
+        type: 'string',
+        enum: ['gateway', 'database', 'all']
+      }
+    },
+    required: ['target'],
+    additionalProperties: false
+  },
+  outputSchema: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      target: { type: 'string' },
+      summary: { type: 'string' },
+      checks: { type: 'array' }
+    },
+    required: ['ok', 'target', 'summary', 'checks']
+  }
+}
+
+type SystemCheckTarget = 'gateway' | 'database' | 'all'
+
+type SystemCheckOutput = {
+  ok: boolean
+  target: SystemCheckTarget
+  summary: string
+  checks: Array<{
+    name: 'gateway' | 'database'
+    ok: boolean
+    summary: string
+    details?: Record<string, unknown>
+  }>
+}
+
+function normalizeSystemCheckTarget(value: string | undefined): SystemCheckTarget {
+  if (value === 'gateway' || value === 'database' || value === 'all') {
+    return value
+  }
+
+  return 'all'
+}
+
+function canExecuteSystemCheck(permissions: string[]) {
+  return systemCheckStatusTool.requiredPermissions.every((permission) => permissions.includes(permission))
+}
+
+async function runSystemCheckStatus(
+  db: ReturnType<typeof createDatabaseClient>['db'],
+  target: SystemCheckTarget
+): Promise<SystemCheckOutput> {
+  const checks: SystemCheckOutput['checks'] = []
+
+  if (target === 'gateway' || target === 'all') {
+    checks.push({
+      name: 'gateway',
+      ok: true,
+      summary: `Gateway is running version ${GATEWAY_VERSION}.`,
+      details: {
+        version: GATEWAY_VERSION,
+        time: new Date().toISOString()
+      }
+    })
+  }
+
+  if (target === 'database' || target === 'all') {
+    try {
+      await db.execute(sql`select 1`)
+      checks.push({
+        name: 'database',
+        ok: true,
+        summary: 'Database query succeeded.'
+      })
+    } catch (error) {
+      checks.push({
+        name: 'database',
+        ok: false,
+        summary: 'Database query failed.',
+        details: {
+          message: error instanceof Error ? error.message : 'Unknown database error.'
+        }
+      })
+    }
+  }
+
+  const ok = checks.every((check) => check.ok)
+
+  return {
+    ok,
+    target,
+    summary: ok ? 'System status check completed successfully.' : 'System status check found a problem.',
+    checks
+  }
+}
+
+function formatSystemCheckResult(output: SystemCheckOutput) {
+  const checkLines = output.checks.map((check) => `${check.ok ? 'OK' : 'FAIL'} ${check.name}: ${check.summary}`)
+
+  return [`系统状态检查完成：${output.ok ? '正常' : '存在异常'}`, ...checkLines].join('\n')
+}
+
 
 function sendHostTokenError(reply: FastifyReply, error: HostTokenError) {
   return reply.status(error.statusCode).send({
@@ -86,6 +202,23 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
 
       return {
         identity
+      }
+    } catch (error) {
+      if (error instanceof HostTokenError) {
+        return sendHostTokenError(reply, error)
+      }
+
+      throw error
+    }
+  })
+
+
+  server.get('/v1/tools', async (request, reply) => {
+    try {
+      authenticateHostRequest(request, config)
+
+      return {
+        tools: [systemCheckStatusTool]
       }
     } catch (error) {
       if (error instanceof HostTokenError) {
@@ -204,11 +337,15 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         })
       }
 
+      const origin = request.headers.origin
+
       reply.hijack()
       reply.raw.writeHead(200, {
+        'access-control-allow-origin': origin ?? '*',
         'cache-control': 'no-cache',
         connection: 'keep-alive',
-        'content-type': 'text/event-stream; charset=utf-8'
+        'content-type': 'text/event-stream; charset=utf-8',
+        vary: 'Origin'
       })
 
       const route = await intentRouter.route({
@@ -230,6 +367,74 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
 
         reply.raw.write(`data: ${JSON.stringify({ delta: followUpMessage })}\n\n`)
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
+        reply.raw.end()
+        return reply
+      }
+
+      if (route.requiresTool && route.candidateTools.includes(systemCheckStatusTool.name)) {
+        const target = normalizeSystemCheckTarget(route.entities.target)
+        const input = { target }
+        const startedAt = Date.now()
+
+        if (!canExecuteSystemCheck(identity.permissions)) {
+          const deniedMessage = '你当前没有权限执行 system.check_status。'
+
+          await db.insert(schema.toolCalls).values({
+            conversationId: params.conversationId,
+            messageId: userMessage.id,
+            traceId: userMessage.traceId,
+            appId: identity.appId,
+            tenantId: identity.tenantId,
+            externalUserId: identity.externalUserId,
+            toolName: systemCheckStatusTool.name,
+            toolVersion: systemCheckStatusTool.version,
+            riskLevel: systemCheckStatusTool.riskLevel,
+            input,
+            status: 'denied',
+            errorCode: 'TOOL_PERMISSION_DENIED',
+            errorMessage: deniedMessage,
+            durationMs: Date.now() - startedAt,
+            finishedAt: new Date()
+          })
+
+          await appendAssistantMessage(db, identity, params.conversationId, {
+            content: deniedMessage
+          })
+
+          reply.raw.write(`event: tool\ndata: ${JSON.stringify({ name: systemCheckStatusTool.name, status: 'denied' })}\n\n`)
+          reply.raw.write(`data: ${JSON.stringify({ delta: deniedMessage })}\n\n`)
+          reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: false })}\n\n`)
+          reply.raw.end()
+          return reply
+        }
+
+        const output = await runSystemCheckStatus(db, target)
+        const statusMessage = formatSystemCheckResult(output)
+
+        await db.insert(schema.toolCalls).values({
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          traceId: userMessage.traceId,
+          appId: identity.appId,
+          tenantId: identity.tenantId,
+          externalUserId: identity.externalUserId,
+          toolName: systemCheckStatusTool.name,
+          toolVersion: systemCheckStatusTool.version,
+          riskLevel: systemCheckStatusTool.riskLevel,
+          input,
+          output,
+          status: output.ok ? 'succeeded' : 'failed',
+          durationMs: Date.now() - startedAt,
+          finishedAt: new Date()
+        })
+
+        await appendAssistantMessage(db, identity, params.conversationId, {
+          content: statusMessage
+        })
+
+        reply.raw.write(`event: tool\ndata: ${JSON.stringify({ name: systemCheckStatusTool.name, status: output.ok ? 'succeeded' : 'failed', output })}\n\n`)
+        reply.raw.write(`data: ${JSON.stringify({ delta: statusMessage })}\n\n`)
+        reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: output.ok })}\n\n`)
         reply.raw.end()
         return reply
       }

@@ -3,7 +3,7 @@ import type { ModelMessage } from './model.js'
 
 const ROUTER_CONFIDENCE_THRESHOLD = 0.6
 
-export type AssistantIntent = 'general_chat' | 'demo_check_status' | 'unknown'
+export type AssistantIntent = 'general_chat' | 'system_check_status' | 'unknown'
 
 export type RouteDecision = {
   intent: AssistantIntent
@@ -51,7 +51,7 @@ function createFallbackDecision(): RouteDecision {
 }
 
 function normalizeIntent(intent?: string): AssistantIntent {
-  if (intent === 'general_chat' || intent === 'demo_check_status' || intent === 'unknown') {
+  if (intent === 'general_chat' || intent === 'system_check_status' || intent === 'unknown') {
     return intent
   }
 
@@ -73,16 +73,18 @@ function matchRuleIntent(content: string): RouteDecision | null {
   const normalizedContent = content.toLowerCase()
   const asksStatus = /status|状态|健康|health/.test(normalizedContent)
   const mentionsGateway = /gateway|网关/.test(normalizedContent)
+  const mentionsDatabase = /database|postgres|db|数据库/.test(normalizedContent)
+  const mentionsSystem = /system|系统|auraxis|服务/.test(normalizedContent)
 
-  if (asksStatus && mentionsGateway) {
+  if (asksStatus && (mentionsGateway || mentionsDatabase || mentionsSystem)) {
     return {
-      intent: 'demo_check_status',
+      intent: 'system_check_status',
       entities: {
-        target: 'gateway'
+        target: mentionsGateway ? 'gateway' : mentionsDatabase ? 'database' : 'all'
       },
       confidence: 0.96,
       requiresTool: true,
-      candidateTools: ['demo.check_status'],
+      candidateTools: ['system.check_status'],
       source: 'rule'
     }
   }
@@ -99,12 +101,12 @@ function buildRouterPrompt(input: RouteInput): string {
   return [
     'You are an intent router for Auraxis.',
     'Return strict JSON only.',
-    'Supported intents: general_chat, demo_check_status, unknown.',
+    'Supported intents: general_chat, system_check_status, unknown.',
     'Schema:',
-    '{"intent":"general_chat|demo_check_status|unknown","entities":{},"confidence":0,"requires_tool":false,"candidate_tools":[]}',
+    '{"intent":"general_chat|system_check_status|unknown","entities":{},"confidence":0,"requires_tool":false,"candidate_tools":[]}',
     'Rules:',
     '- general_chat: normal Q&A or casual chat.',
-    '- demo_check_status: the user wants to check demo system status, especially gateway status.',
+    '- system_check_status: the user wants to check Auraxis system status, especially gateway or database status.',
     '- unknown: intent is unclear.',
     '- candidate_tools is advisory only.',
     '- confidence must be between 0 and 1.',

@@ -29,9 +29,9 @@ test('intent router returns rule match for gateway status questions', async () =
     ]
   })
 
-  assert.equal(route.intent, 'demo_check_status')
+  assert.equal(route.intent, 'system_check_status')
   assert.equal(route.requiresTool, true)
-  assert.deepEqual(route.candidateTools, ['demo.check_status'])
+  assert.deepEqual(route.candidateTools, ['system.check_status'])
   assert.equal(route.source, 'rule')
 })
 
