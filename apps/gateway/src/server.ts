@@ -1,5 +1,5 @@
 import cors from '@fastify/cors'
-import { sql } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import Fastify from 'fastify'
 import type { FastifyReply } from 'fastify'
 import { z } from 'zod'
@@ -149,6 +149,53 @@ function formatSystemCheckResult(output: SystemCheckOutput) {
   const checkLines = output.checks.map((check) => `${check.ok ? 'OK' : 'FAIL'} ${check.name}: ${check.summary}`)
 
   return [`系统状态检查完成：${output.ok ? '正常' : '存在异常'}`, ...checkLines].join('\n')
+}
+
+
+type TraceStatus = 'started' | 'succeeded' | 'failed'
+
+type WriteTraceInput = {
+  traceId: string
+  appId: string
+  conversationId?: string
+  messageId?: string
+  phase: string
+  status: TraceStatus
+  payload?: Record<string, unknown>
+  error?: Record<string, unknown>
+  startedAt?: Date
+  durationMs?: number
+}
+
+function errorPayload(error: unknown) {
+  return {
+    message: error instanceof Error ? error.message : 'Unknown error.'
+  }
+}
+
+async function writeAgentTrace(db: ReturnType<typeof createDatabaseClient>['db'], input: WriteTraceInput) {
+  await db.insert(schema.agentTraces).values({
+    traceId: input.traceId,
+    appId: input.appId,
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    phase: input.phase,
+    status: input.status,
+    payload: input.payload,
+    error: input.error,
+    startedAt: input.startedAt ?? new Date(),
+    finishedAt: input.status === 'started' ? undefined : new Date(),
+    durationMs: input.durationMs
+  })
+}
+
+function matchConversationOwner(identity: { appId: string; tenantId?: string; externalUserId: string }, conversationId: string) {
+  return and(
+    eq(schema.conversations.id, conversationId),
+    eq(schema.conversations.appId, identity.appId),
+    eq(schema.conversations.externalUserId, identity.externalUserId),
+    identity.tenantId ? eq(schema.conversations.tenantId, identity.tenantId) : sql`${schema.conversations.tenantId} is null`
+  )
 }
 
 
@@ -348,6 +395,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         vary: 'Origin'
       })
 
+      const routerStartedAt = Date.now()
       const route = await intentRouter.route({
         latestMessage: parsedBody.data.content,
         messages: history.map((message) => ({
@@ -356,10 +404,32 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         }))
       })
 
+      await writeAgentTrace(db, {
+        traceId: userMessage.traceId,
+        appId: identity.appId,
+        conversationId: params.conversationId,
+        messageId: userMessage.id,
+        phase: 'router',
+        status: 'succeeded',
+        payload: { route },
+        durationMs: Date.now() - routerStartedAt
+      })
+
       reply.raw.write(`event: route\ndata: ${JSON.stringify(route)}\n\n`)
 
       if (shouldAskRouteFollowUp(route)) {
         const followUpMessage = '我还不能稳定判断你的意图。你是想普通咨询，还是想检查 gateway 的状态？'
+
+        await writeAgentTrace(db, {
+          traceId: userMessage.traceId,
+          appId: identity.appId,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          phase: 'model',
+          status: 'succeeded',
+          payload: { skipped: true, reason: 'route_follow_up' },
+          durationMs: 0
+        })
 
         await appendAssistantMessage(db, identity, params.conversationId, {
           content: followUpMessage
@@ -397,6 +467,18 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
             finishedAt: new Date()
           })
 
+          await writeAgentTrace(db, {
+            traceId: userMessage.traceId,
+            appId: identity.appId,
+            conversationId: params.conversationId,
+            messageId: userMessage.id,
+            phase: 'tool',
+            status: 'failed',
+            payload: { toolName: systemCheckStatusTool.name, input, toolStatus: 'denied' },
+            error: { code: 'TOOL_PERMISSION_DENIED', message: deniedMessage },
+            durationMs: Date.now() - startedAt
+          })
+
           await appendAssistantMessage(db, identity, params.conversationId, {
             content: deniedMessage
           })
@@ -428,6 +510,17 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           finishedAt: new Date()
         })
 
+        await writeAgentTrace(db, {
+          traceId: userMessage.traceId,
+          appId: identity.appId,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          phase: 'tool',
+          status: output.ok ? 'succeeded' : 'failed',
+          payload: { toolName: systemCheckStatusTool.name, input, output },
+          durationMs: Date.now() - startedAt
+        })
+
         await appendAssistantMessage(db, identity, params.conversationId, {
           content: statusMessage
         })
@@ -440,6 +533,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
       }
 
       let assistantContent = ''
+      const modelStartedAt = Date.now()
 
       try {
         for await (const chunk of modelProvider.streamChat({
@@ -454,12 +548,34 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           reply.raw.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`)
         }
 
+        await writeAgentTrace(db, {
+          traceId: userMessage.traceId,
+          appId: identity.appId,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          phase: 'model',
+          status: 'succeeded',
+          payload: { model: config.deepSeekModel, contentLength: assistantContent.length },
+          durationMs: Date.now() - modelStartedAt
+        })
+
         await appendAssistantMessage(db, identity, params.conversationId, {
           content: assistantContent
         })
 
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
       } catch (error) {
+        await writeAgentTrace(db, {
+          traceId: userMessage.traceId,
+          appId: identity.appId,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          phase: 'model',
+          status: 'failed',
+          error: errorPayload(error),
+          durationMs: Date.now() - modelStartedAt
+        })
+
         if (error instanceof ModelProviderError) {
           reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: error.code, message: error.message })}\n\n`)
         } else {
@@ -476,6 +592,53 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
 
       if (error instanceof ModelProviderError) {
         return sendModelProviderError(reply, error)
+      }
+
+      throw error
+    }
+  })
+
+  server.get('/v1/conversations/:conversationId/traces', async (request, reply) => {
+    try {
+      const identity = authenticateHostRequest(request, config)
+      const params = request.params as { conversationId: string }
+      const [conversation] = await db
+        .select({ id: schema.conversations.id })
+        .from(schema.conversations)
+        .where(matchConversationOwner(identity, params.conversationId))
+        .limit(1)
+
+      if (!conversation) {
+        return reply.status(404).send({
+          error: 'CONVERSATION_NOT_FOUND',
+          message: 'Conversation was not found.'
+        })
+      }
+
+      const traces = await db
+        .select({
+          id: schema.agentTraces.id,
+          traceId: schema.agentTraces.traceId,
+          conversationId: schema.agentTraces.conversationId,
+          messageId: schema.agentTraces.messageId,
+          phase: schema.agentTraces.phase,
+          status: schema.agentTraces.status,
+          payload: schema.agentTraces.payload,
+          error: schema.agentTraces.error,
+          startedAt: schema.agentTraces.startedAt,
+          finishedAt: schema.agentTraces.finishedAt,
+          durationMs: schema.agentTraces.durationMs
+        })
+        .from(schema.agentTraces)
+        .where(and(eq(schema.agentTraces.appId, identity.appId), eq(schema.agentTraces.conversationId, params.conversationId)))
+        .orderBy(asc(schema.agentTraces.startedAt))
+
+      return {
+        traces
+      }
+    } catch (error) {
+      if (error instanceof HostTokenError) {
+        return sendHostTokenError(reply, error)
       }
 
       throw error

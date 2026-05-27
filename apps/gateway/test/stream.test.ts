@@ -64,6 +64,7 @@ async function cleanupAppData(appId: string) {
   const { db, pool } = createDatabaseClient(config)
 
   try {
+    await db.execute(sql`delete from agent_traces where app_id = ${appId}`)
     await db.execute(sql`delete from tool_calls where app_id = ${appId}`)
     await db.execute(sql`delete from messages where conversation_id in (select id from conversations where app_id = ${appId})`)
     await db.execute(sql`delete from conversations where app_id = ${appId}`)
@@ -136,6 +137,23 @@ test('message stream route writes user and assistant messages and returns sse ch
       assert.equal(messages[0]?.content, 'Hi assistant')
       assert.equal(messages[1]?.role, 'assistant')
       assert.equal(messages[1]?.content, 'Hello world')
+
+      const tracesResponse = await server.inject({
+        method: 'GET',
+        url: `/v1/conversations/${conversationId}/traces`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        }
+      })
+
+      assert.equal(tracesResponse.statusCode, 200)
+      const traces = tracesResponse.json().traces as Array<{ phase: string; status: string; payload?: Record<string, unknown> }>
+      assert.deepEqual(
+        traces.map((trace) => `${trace.phase}:${trace.status}`),
+        ['router:succeeded', 'model:succeeded']
+      )
+      assert.equal((traces[1]?.payload as { contentLength?: number } | undefined)?.contentLength, 'Hello world'.length)
     })
   } finally {
     await cleanupAppData(appId)
@@ -324,6 +342,23 @@ test('message stream executes system check tool and records tool call', async ()
         } finally {
           await pool.end()
         }
+
+        const tracesResponse = await server.inject({
+          method: 'GET',
+          url: `/v1/conversations/${conversationId}/traces`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          }
+        })
+
+        assert.equal(tracesResponse.statusCode, 200)
+        const traces = tracesResponse.json().traces as Array<{ phase: string; status: string; payload?: Record<string, unknown> }>
+        assert.deepEqual(
+          traces.map((trace) => `${trace.phase}:${trace.status}`),
+          ['router:succeeded', 'tool:succeeded']
+        )
+        assert.equal((traces[1]?.payload as { toolName?: string } | undefined)?.toolName, 'system.check_status')
       },
       intentRouter
     )
@@ -404,6 +439,23 @@ test('message stream denies system check without permission', async () => {
         } finally {
           await pool.end()
         }
+
+        const tracesResponse = await server.inject({
+          method: 'GET',
+          url: `/v1/conversations/${conversationId}/traces`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          }
+        })
+
+        assert.equal(tracesResponse.statusCode, 200)
+        const traces = tracesResponse.json().traces as Array<{ phase: string; status: string; error?: Record<string, unknown> }>
+        assert.deepEqual(
+          traces.map((trace) => `${trace.phase}:${trace.status}`),
+          ['router:succeeded', 'tool:failed']
+        )
+        assert.equal((traces[1]?.error as { code?: string } | undefined)?.code, 'TOOL_PERMISSION_DENIED')
       },
       intentRouter
     )
