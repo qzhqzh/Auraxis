@@ -128,17 +128,25 @@ export async function appendConversationMessage(
   }
 
   const traceId = randomUUID()
-  const [message] = await db
-    .insert(schema.messages)
-    .values({
-      conversationId,
-      role: 'user',
-      content: input.content,
-      traceId
-    })
-    .returning(returningMessageShape())
 
-  return message
+  return db.transaction(async (tx) => {
+    const [message] = await tx
+      .insert(schema.messages)
+      .values({
+        conversationId,
+        role: 'user',
+        content: input.content,
+        traceId
+      })
+      .returning(returningMessageShape())
+
+    await tx
+      .update(schema.conversations)
+      .set({ updatedAt: new Date() })
+      .where(eq(schema.conversations.id, conversationId))
+
+    return message
+  })
 }
 
 export async function appendAssistantMessage(
@@ -154,17 +162,25 @@ export async function appendAssistantMessage(
   }
 
   const traceId = randomUUID()
-  const [message] = await db
-    .insert(schema.messages)
-    .values({
-      conversationId,
-      role: 'assistant',
-      content: input.content,
-      traceId
-    })
-    .returning(returningMessageShape())
 
-  return message
+  return db.transaction(async (tx) => {
+    const [message] = await tx
+      .insert(schema.messages)
+      .values({
+        conversationId,
+        role: 'assistant',
+        content: input.content,
+        traceId
+      })
+      .returning(returningMessageShape())
+
+    await tx
+      .update(schema.conversations)
+      .set({ updatedAt: new Date() })
+      .where(eq(schema.conversations.id, conversationId))
+
+    return message
+  })
 }
 
 export async function getConversationMessages(db: Database, identity: AssistantUserIdentity, conversationId: string) {

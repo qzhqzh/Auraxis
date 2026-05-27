@@ -190,3 +190,87 @@ test('conversation endpoints isolate data by authenticated user', async () => {
     await cleanupAppData(appId)
   }
 })
+
+
+test('conversation list orders by latest message activity', async () => {
+  const appId = `conversation-order-${randomUUID()}`
+  const token = createToken(appId, 'user-a')
+
+  await cleanupAppData(appId)
+
+  try {
+    await withServer(async (server) => {
+      const firstResponse = await server.inject({
+        method: 'POST',
+        url: '/v1/conversations',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        },
+        payload: {
+          pageTitle: 'First Conversation'
+        }
+      })
+      const firstId = firstResponse.json().conversation.id as string
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      const secondResponse = await server.inject({
+        method: 'POST',
+        url: '/v1/conversations',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        },
+        payload: {
+          pageTitle: 'Second Conversation'
+        }
+      })
+      const secondId = secondResponse.json().conversation.id as string
+
+      const initialListResponse = await server.inject({
+        method: 'GET',
+        url: '/v1/conversations',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        }
+      })
+
+      assert.equal(initialListResponse.statusCode, 200)
+      let conversations = initialListResponse.json().conversations as Array<{ id: string }>
+      assert.equal(conversations[0]?.id, secondId)
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      const appendResponse = await server.inject({
+        method: 'POST',
+        url: `/v1/conversations/${firstId}/messages`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        },
+        payload: {
+          content: 'Make first active again'
+        }
+      })
+
+      assert.equal(appendResponse.statusCode, 201)
+
+      const refreshedListResponse = await server.inject({
+        method: 'GET',
+        url: '/v1/conversations',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        }
+      })
+
+      assert.equal(refreshedListResponse.statusCode, 200)
+      conversations = refreshedListResponse.json().conversations as Array<{ id: string }>
+      assert.equal(conversations[0]?.id, firstId)
+    })
+  } finally {
+    await cleanupAppData(appId)
+  }
+})
