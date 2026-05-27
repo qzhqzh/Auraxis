@@ -52,10 +52,12 @@
         margin-top: 28px;
       }
 
-      .nav span {
+      .nav span,
+      .nav a {
         border-radius: 8px;
         padding: 10px 12px;
         color: #aebbd0;
+        text-decoration: none;
       }
 
       .nav span:first-child {
@@ -191,7 +193,8 @@
                 h('span', 'Dashboard'),
                 h('span', 'Customers'),
                 h('span', 'Orders'),
-                h('span', 'Settings')
+                h('span', 'Settings'),
+                h('a', { href: '/console.html', target: '_blank' }, 'Dev Console')
               ])
             ]),
             h('main', { class: 'main' }, [

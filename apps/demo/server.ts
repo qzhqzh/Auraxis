@@ -62,6 +62,16 @@ function resolveStaticPath(pathname: string) {
   }
 
   const normalizedPath = normalize(pathname).replace(/^(\.\.[/\\])+/, '')
+  const isWorkspaceAsset = normalizedPath.startsWith('/packages/') || normalizedPath.startsWith('/node_modules/')
+
+  if (!isWorkspaceAsset) {
+    const demoPath = resolve(DEMO_DIR, `.${normalizedPath}`)
+
+    if (demoPath.startsWith(DEMO_DIR)) {
+      return demoPath
+    }
+  }
+
   const absolutePath = resolve(ROOT_DIR, `.${normalizedPath}`)
 
   if (!absolutePath.startsWith(ROOT_DIR)) {
@@ -69,7 +79,6 @@ function resolveStaticPath(pathname: string) {
   }
 
   const allowed =
-    absolutePath.startsWith(resolve(DEMO_DIR)) ||
     absolutePath.startsWith(resolve(ROOT_DIR, 'packages/vue/dist')) ||
     absolutePath.startsWith(resolve(ROOT_DIR, 'node_modules/vue/dist'))
 
