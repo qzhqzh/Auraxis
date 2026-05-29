@@ -141,12 +141,12 @@
         <div class="header">
           <div>
             <h1>Dev Console</h1>
-            <p class="muted">demo-app · demo-user</p>
+            <p id="consoleUser" class="muted">demo-app</p>
           </div>
         </div>
         <div class="actions">
           <button id="refresh" class="button">Refresh</button>
-          <a class="button" href="/" target="_blank">Host Page</a>
+          <a id="hostPage" class="button" href="/" target="_blank">Host Page</a>
         </div>
         <div class="stack" style="margin-top: 16px">
           <section class="card">
@@ -182,6 +182,8 @@
 
     <script type="module">
       const config = window.__AURAXIS_DEMO__
+      const demoUser = new URLSearchParams(window.location.search).get('user') || 'demo-user'
+      const hostHref = `/?user=${encodeURIComponent(demoUser)}`
       const state = {
         token: '',
         conversations: [],
@@ -208,7 +210,7 @@
       }
 
       async function getToken() {
-        const response = await fetch('/dev-token?user=demo-user')
+        const response = await fetch(`/dev-token?user=${encodeURIComponent(demoUser)}`)
         if (!response.ok) throw new Error('Failed to get demo token.')
         state.token = await response.text()
       }
@@ -379,6 +381,8 @@
         }
       }
 
+      $('consoleUser').textContent = `demo-app · ${demoUser}`
+      $('hostPage').href = hostHref
       $('refresh').addEventListener('click', refresh)
       void refresh()
     </script>
