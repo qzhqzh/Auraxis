@@ -12,6 +12,12 @@ Last updated: 2026-05-29
 
 Recent commits, newest first:
 
+- `2cc7c82 refactor: extract internal tool runtime`
+  - `system.check_status` metadata, permission checking, target normalization, executor, and result formatting now live in `apps/gateway/src/tools.ts`.
+  - `server.ts` still owns request orchestration, ToolCall persistence, trace writing, SSE events, and assistant message writes.
+  - Added focused `apps/gateway/test/tools.test.ts` coverage for the runtime boundary.
+- `380fc70 docs: update handoff after trace console`
+  - Updated this handoff after the console latency display work.
 - `33d05a6 feat: show trace latency in demo console`
   - `apps/demo/console.html` now renders compact trace latency summaries from existing trace payloads.
   - Slow phases are highlighted at 3000ms/8000ms, and model traces show derived first-token/API vs streaming/output latency hints.
@@ -45,6 +51,10 @@ Recent commits, newest first:
   - system status questions match a rule and call `system.check_status` when permitted.
   - obvious casual chat skips the Router model.
   - other messages call DeepSeek JSON Router through `ModelProvider.generateJson({ task: 'router' })`.
+- Tool runtime flow:
+  - internal tool metadata and executor helpers live in `apps/gateway/src/tools.ts`.
+  - `GET /v1/tools` returns `internalTools`.
+  - `server.ts` handles policy outcome, ToolCall persistence, trace writing, SSE, and assistant message persistence.
 - Model flow:
   - chat replies stream through `ModelProvider.streamChat({ task: 'chat' })`.
   - model traces include `task`, `provider`, `model`, `firstDeltaMs`, `deltaCount`, `contentLength`, and `durationMs`.
@@ -115,7 +125,7 @@ docker compose exec -T gateway bun run typecheck
 
 Latest verified results before this handoff:
 
-- `test:gateway`: 18 pass, 0 fail
+- `test:gateway`: 21 pass, 0 fail
 - `typecheck`: passed
 - Demo console validation:
   - `GET http://127.0.0.1:5174/console.html`: HTTP 200
@@ -127,16 +137,13 @@ Latest verified results before this handoff:
 
 ## Recommended Next Task
 
-Next recommended task: continue the Internal Tool Runtime backend path, without adding dynamic tool configuration UI.
+The current branch is at a coherent checkpoint for the MVP runtime: auth, conversations, streaming chat, router, one internal diagnostic tool, ToolCall logging, traces, and read-only console are in place.
 
-Keep scope small and backend-only:
+Before adding more code, decide the next product direction:
 
-- Extract the currently inlined `system.check_status` definition, permission check, and executor into a small internal runtime boundary.
-- Preserve the existing public API and SSE behavior:
-  - `GET /v1/tools` returns the same tool metadata shape.
-  - tool execution still records `tool_calls` and `agent_traces`.
-  - missing `tool:system.check_status` still denies execution and does not run the tool.
-- Add focused tests for the runtime boundary or keep existing stream tests passing if behavior is unchanged.
+- Option A: keep hardening the current MVP with a real end-to-end manual validation pass and update handoff only.
+- Option B: add response composition for tool results through `ModelTask.response_compose`, so tool output can be turned into a more natural assistant reply while preserving raw ToolCall/trace records.
+- Option C: design the backend-only ToolDefinition API surface before any dynamic UI, but do not implement arbitrary tool editing yet.
 
 Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs backend API and policy design first.
 
@@ -145,7 +152,7 @@ Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs bac
 Use this when opening a new Codex session:
 
 ```text
-你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，最近已完成 ModelTask 模型路由、问候跳过 Router、model trace latency 展示。下一步请按 handoff 文档推进：继续 Internal Tool Runtime 后端路径，把当前内联的 system.check_status 定义、权限判断和执行逻辑抽成小的内部 runtime 边界，保持现有 API/SSE/ToolCall/trace 行为不变，不做动态工具配置 UI。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
+你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，MVP runtime 已具备 auth、conversation、streaming chat、Router、system.check_status internal tool、ToolCall、agent trace 和只读 console。下一步不要直接做动态工具配置 UI；先和用户确认产品方向：A 做端到端手动验收和 handoff 收尾，B 做 response_compose 工具结果回复整合，C 设计后端 ToolDefinition API 边界。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
 ```
 
 ## Guardrails
