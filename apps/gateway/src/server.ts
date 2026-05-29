@@ -230,6 +230,100 @@ function parseSummaryPayload(payload: unknown) {
   return trimmedSummary ? trimmedSummary.slice(0, MAX_SUMMARY_CHARS) : null
 }
 
+async function streamComposedToolResponse(input: {
+  reply: FastifyReply
+  db: ReturnType<typeof createDatabaseClient>['db']
+  modelProvider: ModelProvider
+  identity: AssistantUserIdentity
+  conversationId: string
+  messageId: string
+  traceId: string
+  modelContext: ModelMessage[]
+  toolName: string
+  toolInput: Record<string, unknown>
+  toolOutput: Record<string, unknown>
+  fallbackMessage: string
+}) {
+  let assistantContent = ''
+  let firstDeltaMs: number | undefined
+  let deltaCount = 0
+  const startedAt = Date.now()
+  const profile = input.modelProvider.getProfile('response_compose')
+  const toolObservationMessage: ModelMessage = {
+    role: 'system',
+    content: [
+      'Compose the final user-facing answer from the tool observation below.',
+      'Use the app instructions and page context already provided.',
+      'Do not expose raw JSON unless it is directly useful. Do not claim to perform actions beyond the tool result.',
+      `Tool observation:\n${stringifyContext({
+        toolName: input.toolName,
+        input: input.toolInput,
+        output: input.toolOutput
+      })}`
+    ].join('\n')
+  }
+
+  try {
+    for await (const chunk of input.modelProvider.streamChat({
+      task: 'response_compose',
+      messages: [...input.modelContext, toolObservationMessage],
+      traceId: input.traceId,
+      userId: input.identity.externalUserId
+    })) {
+      if (firstDeltaMs === undefined) {
+        firstDeltaMs = Date.now() - startedAt
+      }
+
+      deltaCount += 1
+      assistantContent += chunk
+      input.reply.raw.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`)
+    }
+
+    await writeAgentTrace(input.db, {
+      traceId: input.traceId,
+      appId: input.identity.appId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      phase: 'model',
+      status: 'succeeded',
+      payload: {
+        task: 'response_compose',
+        model: profile.model,
+        provider: profile.provider,
+        toolName: input.toolName,
+        firstDeltaMs: firstDeltaMs ?? null,
+        deltaCount,
+        contentLength: assistantContent.length
+      },
+      durationMs: Date.now() - startedAt
+    })
+
+    return assistantContent || input.fallbackMessage
+  } catch (error) {
+    await writeAgentTrace(input.db, {
+      traceId: input.traceId,
+      appId: input.identity.appId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      phase: 'model',
+      status: 'failed',
+      payload: {
+        task: 'response_compose',
+        model: profile.model,
+        provider: profile.provider,
+        toolName: input.toolName,
+        firstDeltaMs: firstDeltaMs ?? null,
+        deltaCount,
+        contentLength: assistantContent.length
+      },
+      error: errorPayload(error),
+      durationMs: Date.now() - startedAt
+    })
+
+    input.reply.raw.write(`data: ${JSON.stringify({ delta: input.fallbackMessage })}\n\n`)
+    return input.fallbackMessage
+  }
+}
 async function refreshConversationSummary(input: {
   db: ReturnType<typeof createDatabaseClient>['db']
   modelProvider: ModelProvider
@@ -630,7 +724,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         }
 
         const output = await runSystemCheckStatus(db, target, GATEWAY_VERSION)
-        const statusMessage = formatSystemCheckResult(output)
+        const fallbackMessage = formatSystemCheckResult(output)
 
         await db.insert(schema.toolCalls).values({
           conversationId: params.conversationId,
@@ -660,12 +754,27 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           durationMs: Date.now() - startedAt
         })
 
+        reply.raw.write(`event: tool\ndata: ${JSON.stringify({ name: systemCheckStatusTool.name, status: output.ok ? 'succeeded' : 'failed', output })}\n\n`)
+
+        const statusMessage = await streamComposedToolResponse({
+          reply,
+          db,
+          modelProvider,
+          identity,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          traceId: userMessage.traceId,
+          modelContext,
+          toolName: systemCheckStatusTool.name,
+          toolInput: input,
+          toolOutput: output,
+          fallbackMessage
+        })
+
         await appendAssistantMessage(db, identity, params.conversationId, {
           content: statusMessage
         })
 
-        reply.raw.write(`event: tool\ndata: ${JSON.stringify({ name: systemCheckStatusTool.name, status: output.ok ? 'succeeded' : 'failed', output })}\n\n`)
-        reply.raw.write(`data: ${JSON.stringify({ delta: statusMessage })}\n\n`)
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: output.ok })}\n\n`)
         reply.raw.end()
         return reply

@@ -656,6 +656,7 @@ test('tools endpoint lists system check tool for authenticated users', async () 
 test('message stream executes system check tool and records tool call', async () => {
   const appId = `system-check-${randomUUID()}`
   const token = createToken(appId, 'user-a', 'hospital_a', ['assistant:chat', 'tool:system.check_status'])
+  let composeMessages: Array<{ role: string; content: string }> = []
   const provider: ModelProvider = {
     getProfile() {
       return testModelProfile
@@ -669,8 +670,9 @@ test('message stream executes system check tool and records tool call', async ()
         entities: {}
       }
     },
-    async *streamChat() {
-      yield 'should-not-run'
+    async *streamChat(input) {
+      composeMessages = input.messages
+      yield 'Gateway status is healthy.'
     }
   }
   const intentRouter: IntentRouter = {
@@ -724,8 +726,9 @@ test('message stream executes system check tool and records tool call', async ()
         assert.equal(streamResponse.statusCode, 200)
         assert.match(streamResponse.body, /event: tool/)
         assert.match(streamResponse.body, /system\.check_status/)
-        assert.match(streamResponse.body, /系统状态检查完成：正常/)
-        assert.doesNotMatch(streamResponse.body, /should-not-run/)
+        assert.match(streamResponse.body, /Gateway status is healthy./)
+        assert.doesNotMatch(streamResponse.body, /系统状态检查完成：正常/)
+        assert.match(composeMessages.at(-1)?.content ?? '', /system.check_status/)
 
         const { db, pool } = createDatabaseClient(config)
 
@@ -752,9 +755,104 @@ test('message stream executes system check tool and records tool call', async ()
         const traces = tracesResponse.json().traces as Array<{ phase: string; status: string; payload?: Record<string, unknown> }>
         assert.deepEqual(
           traces.map((trace) => `${trace.phase}:${trace.status}`),
-          ['router:succeeded', 'tool:succeeded']
+          ['router:succeeded', 'tool:succeeded', 'model:succeeded']
         )
         assert.equal((traces[1]?.payload as { toolName?: string } | undefined)?.toolName, 'system.check_status')
+        assert.equal((traces[2]?.payload as { task?: string } | undefined)?.task, 'response_compose')
+      },
+      intentRouter
+    )
+  } finally {
+    await cleanupAppData(appId)
+  }
+})
+
+test('message stream falls back when response compose fails', async () => {
+  const appId = `system-check-compose-fallback-${randomUUID()}`
+  const token = createToken(appId, 'user-a', 'hospital_a', ['assistant:chat', 'tool:system.check_status'])
+  const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
+    async *streamChat() {
+      throw new Error('compose failed')
+    }
+  }
+  const intentRouter: IntentRouter = {
+    async route() {
+      return {
+        intent: 'system_check_status',
+        entities: {
+          target: 'gateway'
+        },
+        confidence: 0.96,
+        requiresTool: true,
+        candidateTools: ['system.check_status'],
+        source: 'rule'
+      }
+    }
+  }
+
+  await cleanupAppData(appId)
+
+  try {
+    await withServer(
+      provider,
+      async (server) => {
+        const createResponse = await server.inject({
+          method: 'POST',
+          url: '/v1/conversations',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            pageTitle: 'Tool Compose Fallback Test'
+          }
+        })
+
+        assert.equal(createResponse.statusCode, 201)
+        const conversationId = createResponse.json().conversation.id as string
+
+        const streamResponse = await server.inject({
+          method: 'POST',
+          url: `/v1/conversations/${conversationId}/messages:stream`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            content: '检查 gateway 状态'
+          }
+        })
+
+        assert.equal(streamResponse.statusCode, 200)
+        assert.match(streamResponse.body, /系统状态检查完成：正常/)
+
+        const tracesResponse = await server.inject({
+          method: 'GET',
+          url: `/v1/conversations/${conversationId}/traces`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          }
+        })
+        assert.equal(tracesResponse.statusCode, 200)
+        const traces = tracesResponse.json().traces as Array<{ phase: string; status: string; payload?: Record<string, unknown> }>
+        assert.deepEqual(
+          traces.map((trace) => `${trace.phase}:${trace.status}`),
+          ['router:succeeded', 'tool:succeeded', 'model:failed']
+        )
+        assert.equal((traces[2]?.payload as { task?: string } | undefined)?.task, 'response_compose')
       },
       intentRouter
     )
