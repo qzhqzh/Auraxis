@@ -262,7 +262,21 @@ Message 记录用户、助手、系统和工具消息。
 - trace_id
 - created_at
 
-### 7.3 ConversationState
+### 7.3 Conversation Summary + Windowing
+
+当前实现不再把完整历史直接传给聊天模型，而是采用 summary + recent window：
+
+- `conversations.summary` 保存当前会话摘要。
+- 普通聊天上下文为：一条 system summary + 最近 20 条 messages。
+- 当会话消息数达到 12 条后触发 summary；之后每 6 条消息刷新一次。
+- Summary 使用 `ModelTask.summary`，通过 `ModelProvider.generateJson({ task: 'summary' })` 生成严格 JSON：`{ "summary": string }`。
+- Summary 刷新失败只写 `agent_traces` 的 `summary:failed`，不影响当前用户回复。
+- Summary 读写沿用 conversation ownership：`appId + tenantId + externalUserId`。
+- 普通用户聊天窗口不展示 summary；开发 console 只读展示 summary 和 summary trace。
+
+第一版只做会话内 summary/windowing，不做长期用户记忆或主动 reminder。
+
+### 7.4 ConversationState
 
 ConversationState 记录当前对话进度，避免每次都依赖完整历史消息。
 

@@ -12,6 +12,23 @@ Last updated: 2026-05-29
 
 Recent commits, newest first:
 
+- `2e7e468 fix: scroll assistant to latest messages`
+  - The Vue widget scrolls the messages container to the newest message after restoring history, opening the panel, sending, streaming deltas, and final message reload.
+- `b0bdace feat: link console traces to messages`
+  - The demo console now shows traces under the message with the matching `messageId`, while retaining the raw All Traces table.
+- `f74940a feat: show conversation summary in console`
+  - The demo console shows the selected conversation's read-only summary.
+- `d8125e8 feat: add conversation summary windowing`
+  - Chat context now uses `conversations.summary` plus the latest 20 messages.
+  - Long conversations refresh summary through `ModelTask.summary`; summary trace phases are recorded.
+- `e0149ae fix: avoid unsupported reminder promises`
+  - Reminder/memory requests get a deterministic unsupported-capability response instead of a misleading promise.
+- `d3be174 fix: isolate demo console users`
+  - Demo host and console support `?user=...` and preserve per-user conversation isolation.
+- `2aa313f fix: support lan demo access`
+  - Demo host can bind to `0.0.0.0`; browser Gateway URL derives from the request hostname.
+- `aa6d295 docs: record e2e tool validation`
+  - Recorded API-level tool validation in this handoff.
 - `159218f docs: align tool runtime architecture`
   - `docs/assistant-architecture.md` now uses the current `system_check_status` / `system.check_status` internal tool terminology.
   - `docs/codex-handoff.md` now frames the branch as an MVP runtime checkpoint and asks for product direction before more feature work.
@@ -60,13 +77,20 @@ Recent commits, newest first:
   - `server.ts` handles policy outcome, ToolCall persistence, trace writing, SSE, and assistant message persistence.
 - Model flow:
   - chat replies stream through `ModelProvider.streamChat({ task: 'chat' })`.
+  - chat context is built from conversation summary plus the latest 20 messages.
+  - long conversations refresh summary through `ModelProvider.generateJson({ task: 'summary' })`.
   - model traces include `task`, `provider`, `model`, `firstDeltaMs`, `deltaCount`, `contentLength`, and `durationMs`.
+  - summary traces record `summary:succeeded` or `summary:failed` without interrupting the user reply.
 - Development console is read-only and consumes existing API endpoints:
   - `GET /v1/tools`
   - `GET /v1/conversations`
   - `GET /v1/conversations/:conversationId/messages`
   - `GET /v1/conversations/:conversationId/traces`
   - Trace rows show compact latency summaries for `phase`, `status`, `durationMs`, `task`, `model`, `firstDeltaMs`, `deltaCount`, and `contentLength`.
+  - The selected conversation summary is shown read-only.
+  - Messages show their matching traces inline by `messageId`; All Traces remains available as a raw list.
+- Vue widget UX:
+  - restored conversations and streaming updates scroll the messages container to the latest message.
 
 ## Local Startup
 
@@ -138,8 +162,9 @@ docker compose exec -T gateway bun run typecheck
 
 Latest verified results before this handoff:
 
-- `test:gateway`: 21 pass, 0 fail
+- `test:gateway`: 24 pass, 0 fail
 - `typecheck`: passed
+- `bun --cwd packages/vue build`: passed
 - End-to-end tool validation through demo host and Gateway API:
   - demo host: `DEMO_PORT=5174 bun run dev:demo`
   - Gateway health: HTTP 200, `status: ok`
@@ -162,7 +187,7 @@ Latest verified results before this handoff:
 
 ## Recommended Next Task
 
-The current branch is at a coherent checkpoint for the MVP runtime: auth, conversations, streaming chat, router, one internal diagnostic tool, ToolCall logging, traces, read-only console, and API-level end-to-end tool validation are in place.
+The current branch is at a coherent checkpoint for the MVP runtime: auth, conversations, streaming chat, router, one internal diagnostic tool, ToolCall logging, traces, conversation summary/windowing, read-only console, LAN demo access, user-isolated demo testing, and API-level end-to-end tool validation are in place.
 
 Recommended next direction depends on product priority:
 
@@ -177,7 +202,7 @@ Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs bac
 Use this when opening a new Codex session:
 
 ```text
-你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，MVP runtime 已具备 auth、conversation、streaming chat、Router、system.check_status internal tool、ToolCall、agent trace、只读 console，并已通过 API 级端到端工具流验收。下一步不要直接做动态工具配置 UI；先和用户确认产品方向：B 做 response_compose 工具结果回复整合，C 设计后端 ToolDefinition API 边界，或 D 当前分支不开新功能、直接准备 PR。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
+你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，MVP runtime 已具备 auth、conversation、streaming chat、Router、system.check_status internal tool、ToolCall、agent trace、Conversation Summary + Windowing、只读 console、LAN demo access 和用户隔离 demo 测试，并已通过 API 级端到端工具流验收。下一步不要直接做动态工具配置 UI；先和用户确认产品方向：B 做 response_compose 工具结果回复整合，C 设计后端 ToolDefinition API 边界，或 D 当前分支不开新功能、直接准备 PR。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
 ```
 
 ## Guardrails
