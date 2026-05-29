@@ -12,6 +12,9 @@ Last updated: 2026-05-29
 
 Recent commits, newest first:
 
+- `159218f docs: align tool runtime architecture`
+  - `docs/assistant-architecture.md` now uses the current `system_check_status` / `system.check_status` internal tool terminology.
+  - `docs/codex-handoff.md` now frames the branch as an MVP runtime checkpoint and asks for product direction before more feature work.
 - `2cc7c82 refactor: extract internal tool runtime`
   - `system.check_status` metadata, permission checking, target normalization, executor, and result formatting now live in `apps/gateway/src/tools.ts`.
   - `server.ts` still owns request orchestration, ToolCall persistence, trace writing, SSE events, and assistant message writes.
@@ -127,6 +130,18 @@ Latest verified results before this handoff:
 
 - `test:gateway`: 21 pass, 0 fail
 - `typecheck`: passed
+- End-to-end tool validation through demo host and Gateway API:
+  - demo host: `DEMO_PORT=5174 bun run dev:demo`
+  - Gateway health: HTTP 200, `status: ok`
+  - `GET /v1/auth/me`: HTTP 200
+  - `GET /v1/tools`: HTTP 200, includes `system.check_status`
+  - `POST /v1/conversations`: HTTP 201
+  - `POST /v1/conversations/:conversationId/messages:stream` with `帮我检查一下助手服务状态`: HTTP 200
+  - SSE events included `route`, `tool`, assistant `data`, and `done`
+  - route intent: `system_check_status`, candidate tool: `system.check_status`
+  - tool output: gateway ok and database ok
+  - messages API returned user + assistant messages
+  - traces API returned `router:succeeded` and `tool:succeeded`
 - Demo console validation:
   - `GET http://127.0.0.1:5174/console.html`: HTTP 200
   - inline module script syntax check: passed
@@ -137,13 +152,13 @@ Latest verified results before this handoff:
 
 ## Recommended Next Task
 
-The current branch is at a coherent checkpoint for the MVP runtime: auth, conversations, streaming chat, router, one internal diagnostic tool, ToolCall logging, traces, and read-only console are in place.
+The current branch is at a coherent checkpoint for the MVP runtime: auth, conversations, streaming chat, router, one internal diagnostic tool, ToolCall logging, traces, read-only console, and API-level end-to-end tool validation are in place.
 
-Before adding more code, decide the next product direction:
+Recommended next direction depends on product priority:
 
-- Option A: keep hardening the current MVP with a real end-to-end manual validation pass and update handoff only.
 - Option B: add response composition for tool results through `ModelTask.response_compose`, so tool output can be turned into a more natural assistant reply while preserving raw ToolCall/trace records.
 - Option C: design the backend-only ToolDefinition API surface before any dynamic UI, but do not implement arbitrary tool editing yet.
+- Option D: do no new feature work on this branch; open a PR for the current MVP runtime checkpoint.
 
 Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs backend API and policy design first.
 
@@ -152,7 +167,7 @@ Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs bac
 Use this when opening a new Codex session:
 
 ```text
-你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，MVP runtime 已具备 auth、conversation、streaming chat、Router、system.check_status internal tool、ToolCall、agent trace 和只读 console。下一步不要直接做动态工具配置 UI；先和用户确认产品方向：A 做端到端手动验收和 handoff 收尾，B 做 response_compose 工具结果回复整合，C 设计后端 ToolDefinition API 边界。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
+你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，MVP runtime 已具备 auth、conversation、streaming chat、Router、system.check_status internal tool、ToolCall、agent trace、只读 console，并已通过 API 级端到端工具流验收。下一步不要直接做动态工具配置 UI；先和用户确认产品方向：B 做 response_compose 工具结果回复整合，C 设计后端 ToolDefinition API 边界，或 D 当前分支不开新功能、直接准备 PR。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
 ```
 
 ## Guardrails
