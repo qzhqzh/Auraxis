@@ -87,6 +87,21 @@
       .table { width: 100%; border-collapse: collapse; font-size: 13px; }
       .table th, .table td { border-bottom: 1px solid #edf1f5; padding: 9px 8px; text-align: left; vertical-align: top; }
       .table th { color: #667085; font-weight: 600; }
+      .trace-row.warning { background: #fffbeb; }
+      .trace-row.danger { background: #fff1f2; }
+      .trace-summary { display: flex; flex-wrap: wrap; gap: 6px; max-width: 520px; }
+      .trace-pill {
+        border: 1px solid #dce3ea;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #344054;
+        padding: 2px 7px;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .trace-pill.warning { border-color: #fbbf24; background: #fef3c7; color: #92400e; }
+      .trace-pill.danger { border-color: #fca5a5; background: #fee2e2; color: #991b1b; }
+      .trace-hint { flex-basis: 100%; color: #667085; font-size: 12px; }
 
       .message { border-left: 3px solid #cbd5df; padding: 8px 10px; background: #f8fafc; }
       .message.user { border-left-color: #406f9f; }
@@ -249,19 +264,73 @@
           : '<p class="muted">No messages.</p>'
       }
 
+      function latencyLevel(durationMs) {
+        if (durationMs >= 8000) return 'danger'
+        if (durationMs >= 3000) return 'warning'
+        return ''
+      }
+
+      function formatMs(value) {
+        return typeof value === 'number' ? `${value}ms` : 'n/a'
+      }
+
+      function traceMetric(label, value, className = '') {
+        return `<span class="trace-pill ${className}">${escapeHtml(label)}: ${escapeHtml(value)}</span>`
+      }
+
+      function modelLatencyHint(trace, payload, durationMs) {
+        if (trace.phase !== 'model') return ''
+        const firstDeltaMs = payload.firstDeltaMs
+        if (typeof firstDeltaMs !== 'number') {
+          return 'model hint: no streamed delta observed'
+        }
+        if (durationMs >= 3000 && (firstDeltaMs >= durationMs * 0.75 || durationMs - firstDeltaMs <= 500)) {
+          return 'model hint: first-token/API latency'
+        }
+        if (durationMs >= 3000 && firstDeltaMs <= 1000) {
+          return 'model hint: streaming/output latency'
+        }
+        return 'model hint: balanced model latency'
+      }
+
+      function renderTraceSummary(trace) {
+        const payload = trace.payload || {}
+        const durationMs = typeof trace.durationMs === 'number' ? trace.durationMs : 0
+        const level = latencyLevel(durationMs)
+        const hint = modelLatencyHint(trace, payload, durationMs)
+        const metrics = [
+          traceMetric('phase', trace.phase),
+          traceMetric('status', trace.status),
+          traceMetric('duration', formatMs(durationMs), level),
+          traceMetric('task', payload.task || 'n/a'),
+          traceMetric('model', payload.model || 'n/a'),
+          traceMetric('firstDelta', formatMs(payload.firstDeltaMs)),
+          traceMetric('deltas', payload.deltaCount ?? 'n/a'),
+          traceMetric('content', payload.contentLength ?? 'n/a')
+        ]
+        if (hint) {
+          metrics.push(`<div class="trace-hint">${escapeHtml(hint)}</div>`)
+        }
+        return `<div class="trace-summary">${metrics.join('')}</div>`
+      }
+
       function renderTraces(traces) {
         $('traces').innerHTML = traces.length
           ? `<table class="table">
-              <thead><tr><th>Phase</th><th>Status</th><th>Duration</th><th>Payload</th></tr></thead>
+              <thead><tr><th>Phase</th><th>Status</th><th>Duration</th><th>Summary</th><th>Payload</th></tr></thead>
               <tbody>
-                ${traces.map((trace) => `
-                  <tr>
+                ${traces.map((trace) => {
+                  const durationMs = typeof trace.durationMs === 'number' ? trace.durationMs : 0
+                  const level = latencyLevel(durationMs)
+                  return `
+                  <tr class="trace-row ${level}">
                     <td>${escapeHtml(trace.phase)}</td>
                     <td>${escapeHtml(trace.status)}</td>
-                    <td>${trace.durationMs ?? 0}ms</td>
+                    <td>${formatMs(durationMs)}</td>
+                    <td>${renderTraceSummary(trace)}</td>
                     <td><pre>${pretty(trace.error || trace.payload || {})}</pre></td>
                   </tr>
-                `).join('')}
+                `}).join('')}
               </tbody>
             </table>`
           : '<p class="muted">No traces.</p>'
