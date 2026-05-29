@@ -17,6 +17,14 @@ import { createDatabaseClient } from './db/client.js'
 import * as schema from './db/schema.js'
 import { createDeepSeekModelProvider, ModelProvider, ModelProviderError } from './model.js'
 import { createModelIntentRouter, IntentRouter, shouldAskRouteFollowUp } from './router.js'
+import {
+  canExecuteTool,
+  formatSystemCheckResult,
+  internalTools,
+  normalizeSystemCheckTarget,
+  runSystemCheckStatus,
+  systemCheckStatusTool
+} from './tools.js'
 
 const GATEWAY_VERSION = '0.1.0'
 const createConversationSchema = z
@@ -37,120 +45,6 @@ type BuildServerOptions = {
   modelProvider?: ModelProvider
   intentRouter?: IntentRouter
 }
-
-const systemCheckStatusTool = {
-  name: 'system.check_status',
-  version: '1.0.0',
-  type: 'internal' as const,
-  description: 'Checks Auraxis runtime status for gateway and database diagnostics.',
-  riskLevel: 'diagnostic' as const,
-  enabled: true,
-  requiredPermissions: ['tool:system.check_status'],
-  timeoutMs: 5000,
-  maxOutputChars: 4000,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      target: {
-        type: 'string',
-        enum: ['gateway', 'database', 'all']
-      }
-    },
-    required: ['target'],
-    additionalProperties: false
-  },
-  outputSchema: {
-    type: 'object',
-    properties: {
-      ok: { type: 'boolean' },
-      target: { type: 'string' },
-      summary: { type: 'string' },
-      checks: { type: 'array' }
-    },
-    required: ['ok', 'target', 'summary', 'checks']
-  }
-}
-
-type SystemCheckTarget = 'gateway' | 'database' | 'all'
-
-type SystemCheckOutput = {
-  ok: boolean
-  target: SystemCheckTarget
-  summary: string
-  checks: Array<{
-    name: 'gateway' | 'database'
-    ok: boolean
-    summary: string
-    details?: Record<string, unknown>
-  }>
-}
-
-function normalizeSystemCheckTarget(value: string | undefined): SystemCheckTarget {
-  if (value === 'gateway' || value === 'database' || value === 'all') {
-    return value
-  }
-
-  return 'all'
-}
-
-function canExecuteSystemCheck(permissions: string[]) {
-  return systemCheckStatusTool.requiredPermissions.every((permission) => permissions.includes(permission))
-}
-
-async function runSystemCheckStatus(
-  db: ReturnType<typeof createDatabaseClient>['db'],
-  target: SystemCheckTarget
-): Promise<SystemCheckOutput> {
-  const checks: SystemCheckOutput['checks'] = []
-
-  if (target === 'gateway' || target === 'all') {
-    checks.push({
-      name: 'gateway',
-      ok: true,
-      summary: `Gateway is running version ${GATEWAY_VERSION}.`,
-      details: {
-        version: GATEWAY_VERSION,
-        time: new Date().toISOString()
-      }
-    })
-  }
-
-  if (target === 'database' || target === 'all') {
-    try {
-      await db.execute(sql`select 1`)
-      checks.push({
-        name: 'database',
-        ok: true,
-        summary: 'Database query succeeded.'
-      })
-    } catch (error) {
-      checks.push({
-        name: 'database',
-        ok: false,
-        summary: 'Database query failed.',
-        details: {
-          message: error instanceof Error ? error.message : 'Unknown database error.'
-        }
-      })
-    }
-  }
-
-  const ok = checks.every((check) => check.ok)
-
-  return {
-    ok,
-    target,
-    summary: ok ? 'System status check completed successfully.' : 'System status check found a problem.',
-    checks
-  }
-}
-
-function formatSystemCheckResult(output: SystemCheckOutput) {
-  const checkLines = output.checks.map((check) => `${check.ok ? 'OK' : 'FAIL'} ${check.name}: ${check.summary}`)
-
-  return [`系统状态检查完成：${output.ok ? '正常' : '存在异常'}`, ...checkLines].join('\n')
-}
-
 
 type TraceStatus = 'started' | 'succeeded' | 'failed'
 
@@ -265,7 +159,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
       authenticateHostRequest(request, config)
 
       return {
-        tools: [systemCheckStatusTool]
+        tools: internalTools
       }
     } catch (error) {
       if (error instanceof HostTokenError) {
@@ -453,7 +347,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         const input = { target }
         const startedAt = Date.now()
 
-        if (!canExecuteSystemCheck(identity.permissions)) {
+        if (!canExecuteTool(identity.permissions, systemCheckStatusTool)) {
           const deniedMessage = '你当前没有权限执行 system.check_status。'
 
           await db.insert(schema.toolCalls).values({
@@ -497,7 +391,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           return reply
         }
 
-        const output = await runSystemCheckStatus(db, target)
+        const output = await runSystemCheckStatus(db, target, GATEWAY_VERSION)
         const statusMessage = formatSystemCheckResult(output)
 
         await db.insert(schema.toolCalls).values({
