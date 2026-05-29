@@ -656,7 +656,18 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           content: assistantContent
         })
 
-        await refreshConversationSummary({
+        const summaryHistory = [
+          ...history,
+          {
+            role: 'assistant' as const,
+            content: assistantContent
+          }
+        ]
+
+        reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
+        reply.raw.end()
+
+        void refreshConversationSummary({
           db,
           modelProvider,
           identity,
@@ -664,16 +675,9 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           messageId: userMessage.id,
           traceId: userMessage.traceId,
           currentSummary: conversationSummary,
-          history: [
-            ...history,
-            {
-              role: 'assistant',
-              content: assistantContent
-            }
-          ]
+          history: summaryHistory
         })
-
-        reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
+        return reply
       } catch (error) {
         const chatProfile = modelProvider.getProfile('chat')
 

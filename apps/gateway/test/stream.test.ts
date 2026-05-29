@@ -284,16 +284,21 @@ test('message stream sends summary plus recent message window to chat model', as
   }
 })
 
-test('message stream refreshes conversation summary after long chats', async () => {
+test('message stream refreshes conversation summary after long chats without blocking done', async () => {
   const appId = `stream-summary-${randomUUID()}`
   const token = createToken(appId, 'user-a')
   let summaryTaskUsed = false
+  let releaseSummary: () => void = () => undefined
+  const summaryRelease = new Promise<void>((resolve) => {
+    releaseSummary = resolve
+  })
   const provider: ModelProvider = {
     getProfile() {
       return testModelProfile
     },
     async generateJson(input) {
       summaryTaskUsed = input.task === 'summary'
+      await summaryRelease
       return { summary: 'User has been discussing a long support case.' }
     },
     async *streamChat() {
@@ -361,12 +366,26 @@ test('message stream refreshes conversation summary after long chats', async () 
         })
 
         assert.equal(streamResponse.statusCode, 200)
+        assert.match(streamResponse.body, /event: done/)
         assert.equal(summaryTaskUsed, true)
 
         const { db, pool } = createDatabaseClient(config)
         try {
-          const result = await db.execute(sql`select summary from conversations where id = ${conversationId}`)
-          assert.equal(result.rows[0]?.summary, 'User has been discussing a long support case.')
+          const beforeRelease = await db.execute(sql`select summary from conversations where id = ${conversationId}`)
+          assert.equal(beforeRelease.rows[0]?.summary, null)
+
+          releaseSummary()
+
+          let summary = null
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            const result = await db.execute(sql`select summary from conversations where id = ${conversationId}`)
+            summary = result.rows[0]?.summary ?? null
+            if (summary === 'User has been discussing a long support case.') {
+              break
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25))
+          }
+          assert.equal(summary, 'User has been discussing a long support case.')
         } finally {
           await pool.end()
         }
@@ -390,6 +409,7 @@ test('message stream refreshes conversation summary after long chats', async () 
       intentRouter
     )
   } finally {
+    releaseSummary()
     await cleanupAppData(appId)
   }
 })
