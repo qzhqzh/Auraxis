@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Auraxis Dev Console</title>
+    <script src="/demo-config.js"></script>
+    <style>
+      :root {
+        color: #1f2933;
+        background: #f3f6f8;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      button, select { font: inherit; }
+
+      .layout {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 320px 1fr;
+      }
+
+      .sidebar {
+        border-right: 1px solid #dce3ea;
+        background: #ffffff;
+        padding: 18px;
+        overflow: auto;
+      }
+
+      .main {
+        padding: 20px;
+        overflow: auto;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      h1, h2, h3, p { margin: 0; }
+      h1 { font-size: 22px; }
+      h2 { font-size: 15px; margin-bottom: 10px; }
+      h3 { font-size: 13px; margin-bottom: 8px; }
+      .muted { color: #667085; font-size: 13px; }
+
+      .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .button {
+        border: 1px solid #cbd5df;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #1f2933;
+        cursor: pointer;
+        padding: 8px 10px;
+      }
+      .button:disabled { opacity: 0.55; cursor: default; }
+
+      .card {
+        border: 1px solid #dce3ea;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 14px;
+      }
+
+      .stack { display: grid; gap: 12px; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+
+      .list { display: grid; gap: 8px; }
+      .item {
+        width: 100%;
+        border: 1px solid #dce3ea;
+        border-radius: 8px;
+        background: #f8fafc;
+        cursor: pointer;
+        padding: 10px;
+        text-align: left;
+      }
+      .item.active { border-color: #406f9f; background: #edf5ff; }
+      .item-title { font-weight: 700; font-size: 13px; }
+      .item-meta { margin-top: 4px; color: #667085; font-size: 12px; }
+
+      .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      .table th, .table td { border-bottom: 1px solid #edf1f5; padding: 9px 8px; text-align: left; vertical-align: top; }
+      .table th { color: #667085; font-weight: 600; }
+      .trace-row.warning { background: #fffbeb; }
+      .trace-row.danger { background: #fff1f2; }
+      .trace-summary { display: flex; flex-wrap: wrap; gap: 6px; max-width: 520px; }
+      .trace-pill {
+        border: 1px solid #dce3ea;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #344054;
+        padding: 2px 7px;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .trace-pill.warning { border-color: #fbbf24; background: #fef3c7; color: #92400e; }
+      .trace-pill.danger { border-color: #fca5a5; background: #fee2e2; color: #991b1b; }
+      .trace-hint { flex-basis: 100%; color: #667085; font-size: 12px; }
+
+      .message { border-left: 3px solid #cbd5df; padding: 8px 10px; background: #f8fafc; }
+      .message.user { border-left-color: #406f9f; }
+      .message.assistant { border-left-color: #2f8f5b; }
+      .message-role { font-size: 12px; font-weight: 700; color: #4b5563; margin-bottom: 4px; }
+      .message-content { white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
+      .message-traces { margin-top: 10px; display: grid; gap: 8px; }
+      .message-trace {
+        border: 1px solid #dce3ea;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 8px;
+      }
+      .message-trace.warning { border-color: #fbbf24; background: #fffbeb; }
+      .message-trace.danger { border-color: #fca5a5; background: #fff1f2; }
+      .trace-details summary { cursor: pointer; color: #667085; font-size: 12px; margin-top: 6px; }
+      .summary-box {
+        border: 1px solid #dce3ea;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 10px;
+      }
+      .summary-content { white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
+
+      pre {
+        max-height: 320px;
+        overflow: auto;
+        border-radius: 8px;
+        background: #111827;
+        color: #dbeafe;
+        padding: 12px;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .error {
+        border: 1px solid #fecaca;
+        border-radius: 8px;
+        background: #fff1f2;
+        color: #991b1b;
+        padding: 10px;
+        font-size: 13px;
+      }
+
+      @media (max-width: 900px) {
+        .layout { grid-template-columns: 1fr; }
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="header">
+          <div>
+            <h1>Dev Console</h1>
+            <p id="consoleUser" class="muted">demo-app</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="refresh" class="button">Refresh</button>
+          <a id="hostPage" class="button" href="/" target="_blank">Host Page</a>
+        </div>
+        <div class="stack" style="margin-top: 16px">
+          <section class="card">
+            <h2>Tools</h2>
+            <div id="tools" class="list"></div>
+          </section>
+          <section class="card">
+            <h2>Conversations</h2>
+            <div id="conversations" class="list"></div>
+          </section>
+        </div>
+      </aside>
+      <main class="main">
+        <div id="error"></div>
+        <div class="grid">
+          <section class="card stack">
+            <div>
+              <h2>Messages + Traces</h2>
+              <p id="conversationMeta" class="muted">Select a conversation.</p>
+            </div>
+            <div class="summary-box">
+              <h3>Summary</h3>
+              <div id="conversationSummary" class="summary-content muted">No summary.</div>
+            </div>
+            <div id="messages" class="stack"></div>
+          </section>
+          <section class="card stack">
+            <div>
+              <h2>All Traces</h2>
+              <p class="muted">Raw trace list for the selected conversation.</p>
+            </div>
+            <div id="traces"></div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <script type="module">
+      const config = window.__AURAXIS_DEMO__
+      const demoUser = new URLSearchParams(window.location.search).get('user') || 'demo-user'
+      const hostHref = `/?user=${encodeURIComponent(demoUser)}`
+      const state = {
+        token: '',
+        conversations: [],
+        activeConversationId: ''
+      }
+
+      const $ = (id) => document.getElementById(id)
+
+      function setError(error) {
+        $('error').innerHTML = error ? `<div class="error">${escapeHtml(error.message || String(error))}</div>` : ''
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#039;')
+      }
+
+      function pretty(value) {
+        return escapeHtml(JSON.stringify(value, null, 2))
+      }
+
+      async function getToken() {
+        const response = await fetch(`/dev-token?user=${encodeURIComponent(demoUser)}`)
+        if (!response.ok) throw new Error('Failed to get demo token.')
+        state.token = await response.text()
+      }
+
+      async function request(path) {
+        const response = await fetch(`${config.gatewayBaseUrl}${path}`, {
+          headers: {
+            authorization: `Bearer ${state.token}`,
+            'x-auraxis-app-id': 'demo-app'
+          }
+        })
+        const text = await response.text()
+        const payload = text ? JSON.parse(text) : {}
+        if (!response.ok) throw new Error(payload.message || `Request failed: ${path}`)
+        return payload
+      }
+
+      function renderTools(tools) {
+        $('tools').innerHTML = tools.length
+          ? tools.map((tool) => `
+              <div class="item">
+                <div class="item-title">${escapeHtml(tool.name)}</div>
+                <div class="item-meta">${escapeHtml(tool.riskLevel)} · ${escapeHtml(tool.type)} · ${tool.enabled ? 'enabled' : 'disabled'}</div>
+                <div class="item-meta">${escapeHtml((tool.requiredPermissions || []).join(', ') || 'no permissions')}</div>
+              </div>
+            `).join('')
+          : '<p class="muted">No tools.</p>'
+      }
+
+      function renderConversations() {
+        $('conversations').innerHTML = state.conversations.length
+          ? state.conversations.map((conversation) => `
+              <button class="item ${conversation.id === state.activeConversationId ? 'active' : ''}" data-conversation-id="${conversation.id}">
+                <div class="item-title">${escapeHtml(conversation.pageTitle || conversation.sourceUrl || conversation.id)}</div>
+                <div class="item-meta">${escapeHtml(conversation.status)} · ${new Date(conversation.updatedAt).toLocaleString()}</div>
+              </button>
+            `).join('')
+          : '<p class="muted">No conversations yet.</p>'
+
+        document.querySelectorAll('[data-conversation-id]').forEach((button) => {
+          button.addEventListener('click', () => selectConversation(button.dataset.conversationId))
+        })
+      }
+
+      function groupTracesByMessage(traces) {
+        return traces.reduce((groups, trace) => {
+          const messageId = trace.messageId || '__unlinked__'
+          if (!groups.has(messageId)) groups.set(messageId, [])
+          groups.get(messageId).push(trace)
+          return groups
+        }, new Map())
+      }
+
+      function renderMessageTraces(traces) {
+        if (!traces.length) {
+          return '<div class="message-traces"><p class="muted">No traces for this message.</p></div>'
+        }
+
+        return `<div class="message-traces">
+          ${traces.map((trace) => {
+            const durationMs = typeof trace.durationMs === 'number' ? trace.durationMs : 0
+            const level = latencyLevel(durationMs)
+            return `
+              <div class="message-trace ${level}">
+                ${renderTraceSummary(trace)}
+                <details class="trace-details">
+                  <summary>Payload</summary>
+                  <pre>${pretty(trace.error || trace.payload || {})}</pre>
+                </details>
+              </div>
+            `
+          }).join('')}
+        </div>`
+      }
+
+      function renderMessages(messages, traces) {
+        const tracesByMessage = groupTracesByMessage(traces)
+        $('messages').innerHTML = messages.length
+          ? messages.map((message) => `
+              <div class="message ${escapeHtml(message.role)}">
+                <div class="message-role">${escapeHtml(message.role)} · ${new Date(message.createdAt).toLocaleString()} · ${escapeHtml(message.id)}</div>
+                <div class="message-content">${escapeHtml(message.content)}</div>
+                ${renderMessageTraces(tracesByMessage.get(message.id) || [])}
+              </div>
+            `).join('')
+          : '<p class="muted">No messages.</p>'
+      }
+
+      function renderConversationSummary(conversation) {
+        const summary = conversation?.summary?.trim()
+        $('conversationSummary').className = summary ? 'summary-content' : 'summary-content muted'
+        $('conversationSummary').textContent = summary || 'No summary.'
+      }
+
+      function latencyLevel(durationMs) {
+        if (durationMs >= 8000) return 'danger'
+        if (durationMs >= 3000) return 'warning'
+        return ''
+      }
+
+      function formatMs(value) {
+        return typeof value === 'number' ? `${value}ms` : 'n/a'
+      }
+
+      function traceMetric(label, value, className = '') {
+        return `<span class="trace-pill ${className}">${escapeHtml(label)}: ${escapeHtml(value)}</span>`
+      }
+
+      function modelLatencyHint(trace, payload, durationMs) {
+        if (trace.phase !== 'model') return ''
+        const firstDeltaMs = payload.firstDeltaMs
+        if (typeof firstDeltaMs !== 'number') {
+          return 'model hint: no streamed delta observed'
+        }
+        if (durationMs >= 3000 && (firstDeltaMs >= durationMs * 0.75 || durationMs - firstDeltaMs <= 500)) {
+          return 'model hint: first-token/API latency'
+        }
+        if (durationMs >= 3000 && firstDeltaMs <= 1000) {
+          return 'model hint: streaming/output latency'
+        }
+        return 'model hint: balanced model latency'
+      }
+
+      function renderTraceSummary(trace) {
+        const payload = trace.payload || {}
+        const durationMs = typeof trace.durationMs === 'number' ? trace.durationMs : 0
+        const level = latencyLevel(durationMs)
+        const hint = modelLatencyHint(trace, payload, durationMs)
+        const metrics = [
+          traceMetric('phase', trace.phase),
+          traceMetric('status', trace.status),
+          traceMetric('duration', formatMs(durationMs), level),
+          traceMetric('task', payload.task || 'n/a'),
+          traceMetric('model', payload.model || 'n/a'),
+          traceMetric('firstDelta', formatMs(payload.firstDeltaMs)),
+          traceMetric('deltas', payload.deltaCount ?? 'n/a'),
+          traceMetric('content', payload.contentLength ?? 'n/a')
+        ]
+        if (hint) {
+          metrics.push(`<div class="trace-hint">${escapeHtml(hint)}</div>`)
+        }
+        return `<div class="trace-summary">${metrics.join('')}</div>`
+      }
+
+      function renderTraces(traces) {
+        $('traces').innerHTML = traces.length
+          ? `<table class="table">
+              <thead><tr><th>Phase</th><th>Status</th><th>Duration</th><th>Summary</th><th>Payload</th></tr></thead>
+              <tbody>
+                ${traces.map((trace) => {
+                  const durationMs = typeof trace.durationMs === 'number' ? trace.durationMs : 0
+                  const level = latencyLevel(durationMs)
+                  return `
+                  <tr class="trace-row ${level}">
+                    <td>${escapeHtml(trace.phase)}</td>
+                    <td>${escapeHtml(trace.status)}</td>
+                    <td>${formatMs(durationMs)}</td>
+                    <td>${renderTraceSummary(trace)}</td>
+                    <td><pre>${pretty(trace.error || trace.payload || {})}</pre></td>
+                  </tr>
+                `}).join('')}
+              </tbody>
+            </table>`
+          : '<p class="muted">No traces.</p>'
+      }
+
+      async function selectConversation(conversationId) {
+        state.activeConversationId = conversationId
+        renderConversations()
+        const conversation = state.conversations.find((item) => item.id === conversationId)
+        $('conversationMeta').textContent = conversation
+          ? `${conversation.id} · ${conversation.externalUserId || 'user'} · ${conversation.status}`
+          : conversationId
+        renderConversationSummary(conversation)
+        const [messagesPayload, tracesPayload] = await Promise.all([
+          request(`/v1/conversations/${conversationId}/messages`),
+          request(`/v1/conversations/${conversationId}/traces`)
+        ])
+        renderMessages(messagesPayload.messages || [], tracesPayload.traces || [])
+        renderTraces(tracesPayload.traces || [])
+      }
+
+      async function refresh() {
+        setError(null)
+        $('refresh').disabled = true
+        try {
+          await getToken()
+          const [toolsPayload, conversationsPayload] = await Promise.all([
+            request('/v1/tools'),
+            request('/v1/conversations')
+          ])
+          renderTools(toolsPayload.tools || [])
+          state.conversations = conversationsPayload.conversations || []
+          if (!state.activeConversationId && state.conversations[0]) {
+            state.activeConversationId = state.conversations[0].id
+          }
+          renderConversations()
+          if (state.activeConversationId) {
+            await selectConversation(state.activeConversationId)
+          } else {
+            renderConversationSummary(null)
+            renderMessages([], [])
+            renderTraces([])
+          }
+        } catch (error) {
+          setError(error)
+        } finally {
+          $('refresh').disabled = false
+        }
+      }
+
+      $('consoleUser').textContent = `demo-app · ${demoUser}`
+      $('hostPage').href = hostHref
+      $('refresh').addEventListener('click', refresh)
+      void refresh()
+    </script>
+  </body>
+</html>

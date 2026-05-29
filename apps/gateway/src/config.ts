@@ -8,10 +8,19 @@ const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
   DEEPSEEK_MODEL: z.string().default('deepseek-v4-flash'),
+  DEEPSEEK_MODEL_ROUTER: z.string().optional(),
+  DEEPSEEK_MODEL_CHAT: z.string().optional(),
   DEEPSEEK_API_KEY: z.string().optional(),
   HOST_TOKEN_ISSUER: z.string().default('auraxis-dev-host'),
   HOST_TOKEN_SECRET: z.string().min(32).optional()
 })
+
+type ModelTask = 'router' | 'chat' | 'tool_arguments' | 'summary' | 'response_compose' | 'long_context'
+
+type ModelProfile = {
+  provider: 'deepseek'
+  model: string
+}
 
 export type AppConfig = {
   nodeEnv: 'development' | 'test' | 'production'
@@ -21,6 +30,7 @@ export type AppConfig = {
   databaseUrl: string
   deepSeekBaseUrl: string
   deepSeekModel: string
+  modelProfiles: Partial<Record<ModelTask, ModelProfile>>
   deepSeekApiKey?: string
   hostTokenIssuer: string
   hostTokenSecret?: string
@@ -37,6 +47,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: parsed.DATABASE_URL,
     deepSeekBaseUrl: parsed.DEEPSEEK_BASE_URL,
     deepSeekModel: parsed.DEEPSEEK_MODEL,
+    modelProfiles: {
+      router: {
+        provider: 'deepseek',
+        model: parsed.DEEPSEEK_MODEL_ROUTER || parsed.DEEPSEEK_MODEL || 'deepseek-v4-flash'
+      },
+      chat: {
+        provider: 'deepseek',
+        model: parsed.DEEPSEEK_MODEL_CHAT || parsed.DEEPSEEK_MODEL || 'deepseek-v4-flash'
+      }
+    },
     deepSeekApiKey: parsed.DEEPSEEK_API_KEY || undefined,
     hostTokenIssuer: parsed.HOST_TOKEN_ISSUER,
     hostTokenSecret: parsed.HOST_TOKEN_SECRET || undefined

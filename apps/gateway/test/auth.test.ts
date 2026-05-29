@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
-import test from 'node:test'
+import { test } from 'bun:test'
 
 import type { FastifyInstance } from 'fastify'
 
@@ -15,9 +15,19 @@ const config: AppConfig = {
   host: '127.0.0.1',
   port: 3000,
   logLevel: 'silent',
-  databaseUrl: 'postgres://auraxis:change-me-local-dev@localhost:5432/auraxis',
+  databaseUrl: 'postgres://auraxis:change-me-local-dev@postgres:5432/auraxis',
   deepSeekBaseUrl: 'https://api.deepseek.com',
   deepSeekModel: 'deepseek-v4-flash',
+  modelProfiles: {
+    router: {
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash'
+    },
+    chat: {
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro'
+    }
+  },
   hostTokenIssuer: 'auraxis-dev-host',
   hostTokenSecret: secret
 }

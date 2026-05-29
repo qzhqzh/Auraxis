@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "dev:gateway": "bun --cwd apps/gateway dev",
+    "dev:demo": "bun apps/demo/server.ts",
     "build": "bun --cwd packages/shared build && bun --cwd packages/vue build && bun --cwd apps/gateway build",
     "typecheck": "bun --cwd packages/shared typecheck && bun --cwd packages/vue typecheck && bun --cwd apps/gateway typecheck",
     "db:generate": "bun --cwd apps/gateway db:generate",
