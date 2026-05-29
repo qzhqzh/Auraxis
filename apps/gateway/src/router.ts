@@ -60,6 +60,35 @@ function normalizeRoutePayload(payload: DeepSeekRoutePayload): RouteDecision {
   }
 }
 
+function createGeneralChatRuleDecision(): RouteDecision {
+  return {
+    intent: 'general_chat',
+    entities: {},
+    confidence: 0.9,
+    requiresTool: false,
+    candidateTools: [],
+    source: 'rule'
+  }
+}
+
+function matchGeneralChatFastPath(content: string): RouteDecision | null {
+  const normalizedContent = content.trim().toLowerCase()
+
+  if (/^(你好|您好|你好你好|嗨|哈喽|hello|hi|hey)[\s,.!?，。！？]*$/.test(normalizedContent)) {
+    return createGeneralChatRuleDecision()
+  }
+
+  if (/^(谢谢|感谢|多谢|thanks|thank you)[\s,.!?，。！？]*$/.test(normalizedContent)) {
+    return createGeneralChatRuleDecision()
+  }
+
+  if (/^(你是谁|你是什么|你能做什么|介绍一下你自己)[\s,.!?，。！？]*$/.test(normalizedContent)) {
+    return createGeneralChatRuleDecision()
+  }
+
+  return null
+}
+
 function matchRuleIntent(content: string): RouteDecision | null {
   const normalizedContent = content.toLowerCase()
   const asksStatus = /status|状态|健康|health/.test(normalizedContent)
@@ -117,6 +146,12 @@ export function createModelIntentRouter(modelProvider: ModelProvider): IntentRou
 
       if (ruleMatch) {
         return ruleMatch
+      }
+
+      const generalChatFastPath = matchGeneralChatFastPath(input.latestMessage)
+
+      if (generalChatFastPath) {
+        return generalChatFastPath
       }
 
       try {

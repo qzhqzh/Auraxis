@@ -41,17 +41,40 @@ test('intent router returns rule match for gateway status questions', async () =
   assert.equal(modelCalled, false)
 })
 
+test('intent router skips model routing for obvious greetings', async () => {
+  let modelCalled = false
+  const router = createModelIntentRouter(createProvider(async () => {
+    modelCalled = true
+    return {}
+  }))
+
+  const route = await router.route({
+    latestMessage: '你好你好',
+    messages: [
+      {
+        role: 'user',
+        content: '你好你好'
+      }
+    ]
+  })
+
+  assert.equal(route.intent, 'general_chat')
+  assert.equal(route.requiresTool, false)
+  assert.equal(route.source, 'rule')
+  assert.equal(modelCalled, false)
+})
+
 test('intent router falls back to general chat when router model fails', async () => {
   const router = createModelIntentRouter(createProvider(async () => {
     throw new Error('router failed')
   }))
 
   const route = await router.route({
-    latestMessage: '你好',
+    latestMessage: '帮我分析一下这段内容',
     messages: [
       {
         role: 'user',
-        content: '你好'
+        content: '帮我分析一下这段内容'
       }
     ]
   })
