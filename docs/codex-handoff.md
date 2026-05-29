@@ -12,6 +12,10 @@ Last updated: 2026-05-29
 
 Recent commits, newest first:
 
+- `33d05a6 feat: show trace latency in demo console`
+  - `apps/demo/console.html` now renders compact trace latency summaries from existing trace payloads.
+  - Slow phases are highlighted at 3000ms/8000ms, and model traces show derived first-token/API vs streaming/output latency hints.
+  - The console remains read-only; no dynamic tool configuration was added.
 - `cd0ff52 feat: trace model stream latency`
   - `model` phase traces now include `firstDeltaMs`, `deltaCount`, and `contentLength`.
   - `docs/assistant-architecture.md` documents the current ModelProvider shape and trace metrics.
@@ -49,6 +53,7 @@ Recent commits, newest first:
   - `GET /v1/conversations`
   - `GET /v1/conversations/:conversationId/messages`
   - `GET /v1/conversations/:conversationId/traces`
+  - Trace rows show compact latency summaries for `phase`, `status`, `durationMs`, `task`, `model`, `firstDeltaMs`, `deltaCount`, and `contentLength`.
 
 ## Local Startup
 
@@ -112,33 +117,26 @@ Latest verified results before this handoff:
 
 - `test:gateway`: 18 pass, 0 fail
 - `typecheck`: passed
-- Real trace validation for `你好你好` showed:
+- Demo console validation:
+  - `GET http://127.0.0.1:5174/console.html`: HTTP 200
+  - inline module script syntax check: passed
+  - Playwright browser validation was not available because Chrome was missing in the MCP environment.
+- Earlier real trace validation for `你好你好` showed:
   - router: `source: rule`, `durationMs: 0`
   - model: `task: chat`, `model: deepseek-v4-pro`, with `firstDeltaMs`, `deltaCount`, and `contentLength`
 
 ## Recommended Next Task
 
-Next recommended task: enhance the read-only development console latency display.
+Next recommended task: continue the Internal Tool Runtime backend path, without adding dynamic tool configuration UI.
 
-Scope should stay small and UI-only:
+Keep scope small and backend-only:
 
-- Update `apps/demo/console.html` trace rendering.
-- Add a compact trace summary for each trace row:
-  - `phase`
-  - `status`
-  - `durationMs`
-  - `task`
-  - `model`
-  - `firstDeltaMs`
-  - `deltaCount`
-  - `contentLength`
-- Highlight slow phases:
-  - `durationMs >= 3000`: warning
-  - `durationMs >= 8000`: danger
-- Add a small derived hint for model traces:
-  - if `firstDeltaMs` is close to `durationMs`, mark as first-token/API latency.
-  - if `firstDeltaMs` is small but `durationMs` is large, mark as streaming/output latency.
-- Keep raw JSON visible for payload/error. Do not turn this into a full admin UI yet.
+- Extract the currently inlined `system.check_status` definition, permission check, and executor into a small internal runtime boundary.
+- Preserve the existing public API and SSE behavior:
+  - `GET /v1/tools` returns the same tool metadata shape.
+  - tool execution still records `tool_calls` and `agent_traces`.
+  - missing `tool:system.check_status` still denies execution and does not run the tool.
+- Add focused tests for the runtime boundary or keep existing stream tests passing if behavior is unchanged.
 
 Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs backend API and policy design first.
 
@@ -147,7 +145,7 @@ Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs bac
 Use this when opening a new Codex session:
 
 ```text
-你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，最近已完成 ModelTask 模型路由、问候跳过 Router、model trace 的 firstDeltaMs/deltaCount/contentLength。下一步请按 handoff 文档推进：增强 apps/demo/console.html 的只读 trace latency 展示，不做动态工具配置。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，必要时重启 gateway/demo 做手动验证，最后 conventional commit。
+你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，最近已完成 ModelTask 模型路由、问候跳过 Router、model trace latency 展示。下一步请按 handoff 文档推进：继续 Internal Tool Runtime 后端路径，把当前内联的 system.check_status 定义、权限判断和执行逻辑抽成小的内部 runtime 边界，保持现有 API/SSE/ToolCall/trace 行为不变，不做动态工具配置 UI。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
 ```
 
 ## Guardrails
