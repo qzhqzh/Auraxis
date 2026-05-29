@@ -777,6 +777,23 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
 
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: output.ok })}\n\n`)
         reply.raw.end()
+
+        void refreshConversationSummary({
+          db,
+          modelProvider,
+          identity,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          traceId: userMessage.traceId,
+          currentSummary: conversationContext.summary,
+          history: [
+            ...history,
+            {
+              role: 'assistant' as const,
+              content: statusMessage
+            }
+          ]
+        })
         return reply
       }
 

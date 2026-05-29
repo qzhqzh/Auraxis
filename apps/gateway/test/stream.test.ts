@@ -767,6 +767,123 @@ test('message stream executes system check tool and records tool call', async ()
   }
 })
 
+test('message stream refreshes conversation summary after tool response', async () => {
+  const appId = `system-check-summary-${randomUUID()}`
+  const token = createToken(appId, 'user-a', 'hospital_a', ['assistant:chat', 'tool:system.check_status'])
+  let summaryTaskUsed = false
+  const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson(input) {
+      if (input.task === 'summary') {
+        summaryTaskUsed = true
+        return { summary: 'User checked gateway status during a long conversation.' }
+      }
+
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
+    async *streamChat() {
+      yield 'Gateway status is healthy.'
+    }
+  }
+  const intentRouter: IntentRouter = {
+    async route() {
+      return {
+        intent: 'system_check_status',
+        entities: {
+          target: 'gateway'
+        },
+        confidence: 0.96,
+        requiresTool: true,
+        candidateTools: ['system.check_status'],
+        source: 'rule'
+      }
+    }
+  }
+
+  await cleanupAppData(appId)
+
+  try {
+    await withServer(
+      provider,
+      async (server) => {
+        const createResponse = await server.inject({
+          method: 'POST',
+          url: '/v1/conversations',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            pageTitle: 'Tool Summary Test'
+          }
+        })
+
+        assert.equal(createResponse.statusCode, 201)
+        const conversationId = createResponse.json().conversation.id as string
+
+        for (let index = 1; index <= 11; index += 1) {
+          const appendResponse = await server.inject({
+            method: 'POST',
+            url: `/v1/conversations/${conversationId}/messages`,
+            headers: {
+              authorization: `Bearer ${token}`,
+              'x-auraxis-app-id': appId
+            },
+            payload: {
+              content: `prior tool message ${index}`
+            }
+          })
+          assert.equal(appendResponse.statusCode, 201)
+        }
+
+        const streamResponse = await server.inject({
+          method: 'POST',
+          url: `/v1/conversations/${conversationId}/messages:stream`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            content: '检查 gateway 状态'
+          }
+        })
+
+        assert.equal(streamResponse.statusCode, 200)
+        assert.match(streamResponse.body, /Gateway status is healthy./)
+
+        const { db, pool } = createDatabaseClient(config)
+        try {
+          let summary = null
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            const result = await db.execute(sql`select summary from conversations where id = ${conversationId}`)
+            summary = result.rows[0]?.summary ?? null
+            if (summary === 'User checked gateway status during a long conversation.') {
+              break
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25))
+          }
+
+          assert.equal(summaryTaskUsed, true)
+          assert.equal(summary, 'User checked gateway status during a long conversation.')
+        } finally {
+          await pool.end()
+        }
+      },
+      intentRouter
+    )
+  } finally {
+    await cleanupAppData(appId)
+  }
+})
+
 test('message stream falls back when response compose fails', async () => {
   const appId = `system-check-compose-fallback-${randomUUID()}`
   const token = createToken(appId, 'user-a', 'hospital_a', ['assistant:chat', 'tool:system.check_status'])
