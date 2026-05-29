@@ -90,18 +90,28 @@ Health check:
 curl http://127.0.0.1:3010/v1/health
 ```
 
-Demo host, when needed:
+Demo host, when needed locally:
 
 ```bash
 DEMO_PORT=5174 bun run dev:demo
 ```
 
-Then open:
+For LAN or remote browser testing, bind the demo host to all interfaces:
+
+```bash
+DEMO_HOST=0.0.0.0 DEMO_PORT=5174 bun run dev:demo
+```
+
+Then open locally or from another device on the LAN:
 
 ```text
 http://127.0.0.1:5174/
 http://127.0.0.1:5174/console.html
+http://<server-lan-ip>:5174/
+http://<server-lan-ip>:5174/console.html
 ```
+
+When opened through a LAN IP, `/demo-config.js` points the browser at `http://<same-hostname>:${GATEWAY_PORT}` for Gateway access.
 
 ## Environment Notes
 

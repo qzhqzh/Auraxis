@@ -4,6 +4,7 @@ import { normalize, resolve } from 'node:path'
 const ROOT_DIR = resolve(import.meta.dir, '../..')
 const DEMO_DIR = resolve(import.meta.dir)
 const PORT = Number(process.env.DEMO_PORT ?? 5173)
+const HOST = process.env.DEMO_HOST ?? process.env.HOST ?? '0.0.0.0'
 
 type DevEnv = {
   GATEWAY_PORT?: string
@@ -92,6 +93,7 @@ if (!env.hostTokenSecret || env.hostTokenSecret.length < 32) {
 }
 
 Bun.serve({
+  hostname: HOST,
   port: PORT,
   async fetch(request) {
     const url = new URL(request.url)
@@ -152,4 +154,4 @@ Bun.serve({
   }
 })
 
-console.log(`Auraxis demo host listening at http://127.0.0.1:${PORT}`)
+console.log(`Auraxis demo host listening at http://${HOST}:${PORT}`)
