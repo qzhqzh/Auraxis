@@ -186,6 +186,214 @@ test('message stream route writes user and assistant messages and returns sse ch
   }
 })
 
+test('message stream sends summary plus recent message window to chat model', async () => {
+  const appId = `stream-window-${randomUUID()}`
+  const token = createToken(appId, 'user-a')
+  let chatMessages: Array<{ role: string; content: string }> = []
+  const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return { summary: 'unused' }
+    },
+    async *streamChat(input) {
+      chatMessages = input.messages
+      yield 'windowed reply'
+    }
+  }
+  const intentRouter: IntentRouter = {
+    async route() {
+      return {
+        intent: 'general_chat',
+        entities: {},
+        confidence: 0.9,
+        requiresTool: false,
+        candidateTools: [],
+        source: 'rule'
+      }
+    }
+  }
+
+  await cleanupAppData(appId)
+
+  try {
+    await withServer(
+      provider,
+      async (server) => {
+        const createResponse = await server.inject({
+          method: 'POST',
+          url: '/v1/conversations',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            pageTitle: 'Window Test'
+          }
+        })
+        assert.equal(createResponse.statusCode, 201)
+        const conversationId = createResponse.json().conversation.id as string
+
+        const { db, pool } = createDatabaseClient(config)
+        try {
+          await db.execute(sql`update conversations set summary = 'Earlier summary for windowing.' where id = ${conversationId}`)
+        } finally {
+          await pool.end()
+        }
+
+        for (let index = 1; index <= 25; index += 1) {
+          const appendResponse = await server.inject({
+            method: 'POST',
+            url: `/v1/conversations/${conversationId}/messages`,
+            headers: {
+              authorization: `Bearer ${token}`,
+              'x-auraxis-app-id': appId
+            },
+            payload: {
+              content: `history ${index}`
+            }
+          })
+          assert.equal(appendResponse.statusCode, 201)
+        }
+
+        const streamResponse = await server.inject({
+          method: 'POST',
+          url: `/v1/conversations/${conversationId}/messages:stream`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            content: 'current message'
+          }
+        })
+
+        assert.equal(streamResponse.statusCode, 200)
+        assert.equal(chatMessages.length, 21)
+        assert.equal(chatMessages[0]?.role, 'system')
+        assert.match(chatMessages[0]?.content ?? '', /Earlier summary for windowing/)
+        assert.equal(chatMessages[1]?.content, 'history 7')
+        assert.equal(chatMessages.at(-1)?.content, 'current message')
+        assert.equal(chatMessages.some((message) => message.content === 'history 1'), false)
+      },
+      intentRouter
+    )
+  } finally {
+    await cleanupAppData(appId)
+  }
+})
+
+test('message stream refreshes conversation summary after long chats', async () => {
+  const appId = `stream-summary-${randomUUID()}`
+  const token = createToken(appId, 'user-a')
+  let summaryTaskUsed = false
+  const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson(input) {
+      summaryTaskUsed = input.task === 'summary'
+      return { summary: 'User has been discussing a long support case.' }
+    },
+    async *streamChat() {
+      yield 'summary reply'
+    }
+  }
+  const intentRouter: IntentRouter = {
+    async route() {
+      return {
+        intent: 'general_chat',
+        entities: {},
+        confidence: 0.9,
+        requiresTool: false,
+        candidateTools: [],
+        source: 'rule'
+      }
+    }
+  }
+
+  await cleanupAppData(appId)
+
+  try {
+    await withServer(
+      provider,
+      async (server) => {
+        const createResponse = await server.inject({
+          method: 'POST',
+          url: '/v1/conversations',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            pageTitle: 'Summary Test'
+          }
+        })
+        assert.equal(createResponse.statusCode, 201)
+        const conversationId = createResponse.json().conversation.id as string
+
+        for (let index = 1; index <= 11; index += 1) {
+          const appendResponse = await server.inject({
+            method: 'POST',
+            url: `/v1/conversations/${conversationId}/messages`,
+            headers: {
+              authorization: `Bearer ${token}`,
+              'x-auraxis-app-id': appId
+            },
+            payload: {
+              content: `prior message ${index}`
+            }
+          })
+          assert.equal(appendResponse.statusCode, 201)
+        }
+
+        const streamResponse = await server.inject({
+          method: 'POST',
+          url: `/v1/conversations/${conversationId}/messages:stream`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          },
+          payload: {
+            content: 'trigger summary'
+          }
+        })
+
+        assert.equal(streamResponse.statusCode, 200)
+        assert.equal(summaryTaskUsed, true)
+
+        const { db, pool } = createDatabaseClient(config)
+        try {
+          const result = await db.execute(sql`select summary from conversations where id = ${conversationId}`)
+          assert.equal(result.rows[0]?.summary, 'User has been discussing a long support case.')
+        } finally {
+          await pool.end()
+        }
+
+        const tracesResponse = await server.inject({
+          method: 'GET',
+          url: `/v1/conversations/${conversationId}/traces`,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-auraxis-app-id': appId
+          }
+        })
+        assert.equal(tracesResponse.statusCode, 200)
+        const traces = tracesResponse.json().traces as Array<{ phase: string; status: string; payload?: Record<string, unknown> }>
+        assert.deepEqual(
+          traces.map((trace) => `${trace.phase}:${trace.status}`),
+          ['router:succeeded', 'model:succeeded', 'summary:succeeded']
+        )
+        assert.equal((traces[2]?.payload as { task?: string } | undefined)?.task, 'summary')
+      },
+      intentRouter
+    )
+  } finally {
+    await cleanupAppData(appId)
+  }
+})
+
 test('message stream does not promise unsupported reminders or memory', async () => {
   const appId = `unsupported-reminder-${randomUUID()}`
   const token = createToken(appId, 'user-a')

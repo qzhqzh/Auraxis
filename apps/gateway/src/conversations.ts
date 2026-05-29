@@ -80,6 +80,7 @@ export async function createConversation(
         sourceUrl: schema.conversations.sourceUrl,
         pageTitle: schema.conversations.pageTitle,
         status: schema.conversations.status,
+        summary: schema.conversations.summary,
         createdAt: schema.conversations.createdAt,
         updatedAt: schema.conversations.updatedAt
       })
@@ -107,6 +108,7 @@ export async function listConversations(db: Database, identity: AssistantUserIde
       sourceUrl: schema.conversations.sourceUrl,
       pageTitle: schema.conversations.pageTitle,
       status: schema.conversations.status,
+      summary: schema.conversations.summary,
       createdAt: schema.conversations.createdAt,
       updatedAt: schema.conversations.updatedAt
     })
@@ -195,4 +197,40 @@ export async function getConversationMessages(db: Database, identity: AssistantU
     .from(schema.messages)
     .where(eq(schema.messages.conversationId, conversationId))
     .orderBy(asc(schema.messages.createdAt))
+}
+
+export async function getConversationSummary(db: Database, identity: AssistantUserIdentity, conversationId: string) {
+  const conversation = await ensureOwnedConversation(db, identity, conversationId)
+
+  if (!conversation) {
+    return null
+  }
+
+  const [row] = await db
+    .select({ summary: schema.conversations.summary })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, conversationId))
+    .limit(1)
+
+  return row?.summary ?? ''
+}
+
+export async function updateConversationSummary(
+  db: Database,
+  identity: AssistantUserIdentity,
+  conversationId: string,
+  summary: string
+) {
+  const conversation = await ensureOwnedConversation(db, identity, conversationId)
+
+  if (!conversation) {
+    return null
+  }
+
+  await db
+    .update(schema.conversations)
+    .set({ summary, updatedAt: new Date() })
+    .where(eq(schema.conversations.id, conversationId))
+
+  return { id: conversationId, summary }
 }

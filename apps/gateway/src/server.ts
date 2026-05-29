@@ -5,17 +5,21 @@ import type { FastifyReply } from 'fastify'
 import { z } from 'zod'
 
 import { HostTokenError, authenticateHostRequest } from './auth.js'
+import type { AssistantUserIdentity } from './auth.js'
 import type { AppConfig } from './config.js'
 import {
   appendAssistantMessage,
   appendConversationMessage,
   createConversation,
   getConversationMessages,
-  listConversations
+  getConversationSummary,
+  listConversations,
+  updateConversationSummary
 } from './conversations.js'
 import { createDatabaseClient } from './db/client.js'
 import * as schema from './db/schema.js'
 import { createDeepSeekModelProvider, ModelProvider, ModelProviderError } from './model.js'
+import type { ModelMessage } from './model.js'
 import { createModelIntentRouter, IntentRouter, shouldAskRouteFollowUp } from './router.js'
 import {
   canExecuteTool,
@@ -27,6 +31,10 @@ import {
 } from './tools.js'
 
 const GATEWAY_VERSION = '0.1.0'
+const RECENT_CONTEXT_MESSAGE_LIMIT = 20
+const SUMMARY_REFRESH_MESSAGE_THRESHOLD = 12
+const SUMMARY_REFRESH_MESSAGE_INTERVAL = 6
+const MAX_SUMMARY_CHARS = 4000
 const createConversationSchema = z
   .object({
     pageTitle: z.string().min(1).optional(),
@@ -102,6 +110,135 @@ function isUnsupportedReminderRequest(content: string) {
 
 function unsupportedReminderMessage() {
   return '我现在还没有长期记忆、定时提醒或主动推送功能，所以不能真正保存这件事，也不能在周末自动提醒你。当前对话里我可以继续参考你刚刚说的内容；如果要做可持久提醒，需要后续接入受控的 reminder/memory 工具。'
+}
+
+function toModelMessages(messages: Array<{ role: ModelMessage['role']; content: string }>): ModelMessage[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content
+  }))
+}
+
+function buildChatContext(summary: string, history: Array<{ role: ModelMessage['role']; content: string }>): ModelMessage[] {
+  const recentMessages = toModelMessages(history.slice(-RECENT_CONTEXT_MESSAGE_LIMIT))
+  const trimmedSummary = summary.trim()
+
+  if (!trimmedSummary) {
+    return recentMessages
+  }
+
+  return [
+    {
+      role: 'system',
+      content: `Conversation summary so far:\n${trimmedSummary}`
+    },
+    ...recentMessages
+  ]
+}
+
+function buildSummaryContext(summary: string, history: Array<{ role: ModelMessage['role']; content: string }>): ModelMessage[] {
+  const messages = buildChatContext(summary, history)
+
+  return [
+    {
+      role: 'system',
+      content: 'Summarize the conversation for future assistant context. Return strict JSON with a single string field named summary. Preserve durable user goals, decisions, constraints, and unresolved questions. Do not invent facts.'
+    },
+    ...messages
+  ]
+}
+
+function shouldRefreshConversationSummary(messageCount: number, currentSummary: string) {
+  if (messageCount < SUMMARY_REFRESH_MESSAGE_THRESHOLD) {
+    return false
+  }
+
+  return !currentSummary.trim() || messageCount % SUMMARY_REFRESH_MESSAGE_INTERVAL === 0
+}
+
+function parseSummaryPayload(payload: unknown) {
+  if (!payload || typeof payload !== 'object' || !('summary' in payload)) {
+    return null
+  }
+
+  const summary = (payload as { summary?: unknown }).summary
+
+  if (typeof summary !== 'string') {
+    return null
+  }
+
+  const trimmedSummary = summary.trim()
+
+  return trimmedSummary ? trimmedSummary.slice(0, MAX_SUMMARY_CHARS) : null
+}
+
+async function refreshConversationSummary(input: {
+  db: ReturnType<typeof createDatabaseClient>['db']
+  modelProvider: ModelProvider
+  identity: AssistantUserIdentity
+  conversationId: string
+  messageId: string
+  traceId: string
+  currentSummary: string
+  history: Array<{ role: ModelMessage['role']; content: string }>
+}) {
+  if (!shouldRefreshConversationSummary(input.history.length, input.currentSummary)) {
+    return
+  }
+
+  const startedAt = Date.now()
+  const profile = input.modelProvider.getProfile('summary')
+
+  try {
+    const payload = await input.modelProvider.generateJson({
+      task: 'summary',
+      messages: buildSummaryContext(input.currentSummary, input.history),
+      traceId: input.traceId
+    })
+    const summary = parseSummaryPayload(payload)
+
+    if (!summary) {
+      throw new Error('Summary model returned an invalid payload.')
+    }
+
+    await updateConversationSummary(input.db, input.identity, input.conversationId, summary)
+
+    await writeAgentTrace(input.db, {
+      traceId: input.traceId,
+      appId: input.identity.appId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      phase: 'summary',
+      status: 'succeeded',
+      payload: {
+        task: 'summary',
+        model: profile.model,
+        provider: profile.provider,
+        messageCount: input.history.length,
+        summaryLength: summary.length,
+        previousSummary: Boolean(input.currentSummary.trim())
+      },
+      durationMs: Date.now() - startedAt
+    })
+  } catch (error) {
+    await writeAgentTrace(input.db, {
+      traceId: input.traceId,
+      appId: input.identity.appId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      phase: 'summary',
+      status: 'failed',
+      payload: {
+        task: 'summary',
+        model: profile.model,
+        provider: profile.provider,
+        messageCount: input.history.length,
+        previousSummary: Boolean(input.currentSummary.trim())
+      },
+      error: errorPayload(error),
+      durationMs: Date.now() - startedAt
+    })
+  }
 }
 
 function sendHostTokenError(reply: FastifyReply, error: HostTokenError) {
@@ -289,6 +426,15 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         })
       }
 
+      const conversationSummary = await getConversationSummary(db, identity, params.conversationId)
+
+      if (conversationSummary === null) {
+        return reply.status(404).send({
+          error: 'CONVERSATION_NOT_FOUND',
+          message: 'Conversation was not found.'
+        })
+      }
+
       const origin = request.headers.origin
 
       reply.hijack()
@@ -303,10 +449,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
       const routerStartedAt = Date.now()
       const route = await intentRouter.route({
         latestMessage: parsedBody.data.content,
-        messages: history.map((message) => ({
-          role: message.role,
-          content: message.content
-        }))
+        messages: toModelMessages(history)
       })
 
       const routerProfile = route.source === 'model' ? modelProvider.getProfile('router') : undefined
@@ -476,10 +619,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
       try {
         for await (const chunk of modelProvider.streamChat({
           task: 'chat',
-          messages: history.map((message) => ({
-            role: message.role,
-            content: message.content
-          })),
+          messages: buildChatContext(conversationSummary, history),
           traceId: userMessage.traceId,
           userId: identity.externalUserId
         })) {
@@ -514,6 +654,23 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
 
         await appendAssistantMessage(db, identity, params.conversationId, {
           content: assistantContent
+        })
+
+        await refreshConversationSummary({
+          db,
+          modelProvider,
+          identity,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          traceId: userMessage.traceId,
+          currentSummary: conversationSummary,
+          history: [
+            ...history,
+            {
+              role: 'assistant',
+              content: assistantContent
+            }
+          ]
         })
 
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
