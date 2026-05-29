@@ -11,8 +11,8 @@ import {
   appendAssistantMessage,
   appendConversationMessage,
   createConversation,
+  getConversationContext,
   getConversationMessages,
-  getConversationSummary,
   listConversations,
   updateConversationSummary
 } from './conversations.js'
@@ -35,6 +35,8 @@ const RECENT_CONTEXT_MESSAGE_LIMIT = 20
 const SUMMARY_REFRESH_MESSAGE_THRESHOLD = 12
 const SUMMARY_REFRESH_MESSAGE_INTERVAL = 6
 const MAX_SUMMARY_CHARS = 4000
+const MAX_CONTEXT_JSON_CHARS = 4000
+const DEFAULT_APP_INSTRUCTIONS = 'You are Auraxis Assistant. Help the authenticated user with the current application context. Use provided page context and conversation context when relevant. Do not invent business data or claim to have performed actions that were not executed by an authorized tool.'
 const createConversationSchema = z
   .object({
     pageTitle: z.string().min(1).optional(),
@@ -119,25 +121,81 @@ function toModelMessages(messages: Array<{ role: ModelMessage['role']; content: 
   }))
 }
 
-function buildChatContext(summary: string, history: Array<{ role: ModelMessage['role']; content: string }>): ModelMessage[] {
-  const recentMessages = toModelMessages(history.slice(-RECENT_CONTEXT_MESSAGE_LIMIT))
-  const trimmedSummary = summary.trim()
+type ConversationContext = {
+  pageTitle: string | null
+  sourceUrl: string | null
+  metadata: Record<string, unknown>
+  summary: string
+}
 
-  if (!trimmedSummary) {
-    return recentMessages
+type ChatContextInput = {
+  appInstructions: string
+  conversation: ConversationContext
+  history: Array<{ role: ModelMessage['role']; content: string }>
+}
+
+function stringifyContext(value: unknown) {
+  return JSON.stringify(value, null, 2).slice(0, MAX_CONTEXT_JSON_CHARS)
+}
+
+function parseAppInstructions(settings: Record<string, unknown> | null | undefined) {
+  const candidates = [settings?.appInstructions, settings?.instructions, settings?.assistantInstructions]
+  const instruction = candidates.find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+
+  return instruction?.trim() || DEFAULT_APP_INSTRUCTIONS
+}
+
+async function getAppInstructions(db: ReturnType<typeof createDatabaseClient>['db'], appId: string) {
+  const [app] = await db
+    .select({ settings: schema.assistantApps.settings })
+    .from(schema.assistantApps)
+    .where(and(eq(schema.assistantApps.appId, appId), eq(schema.assistantApps.enabled, true)))
+    .limit(1)
+
+  return parseAppInstructions(app?.settings)
+}
+
+function buildSystemContext(input: { appInstructions: string; conversation: ConversationContext }) {
+  const sections = [
+    ['App instructions', input.appInstructions.trim() || DEFAULT_APP_INSTRUCTIONS],
+    [
+      'Page context',
+      stringifyContext({
+        pageTitle: input.conversation.pageTitle,
+        sourceUrl: input.conversation.sourceUrl,
+        metadata: input.conversation.metadata ?? {}
+      })
+    ]
+  ]
+  const trimmedSummary = input.conversation.summary.trim()
+
+  if (trimmedSummary) {
+    sections.push(['Conversation summary so far', trimmedSummary])
   }
+
+  return sections.map(([title, content]) => `## ${title}\n${content}`).join('\n\n')
+}
+
+function buildChatContext(input: ChatContextInput): ModelMessage[] {
+  const recentMessages = toModelMessages(input.history.slice(-RECENT_CONTEXT_MESSAGE_LIMIT))
 
   return [
     {
       role: 'system',
-      content: `Conversation summary so far:\n${trimmedSummary}`
+      content: buildSystemContext({ appInstructions: input.appInstructions, conversation: input.conversation })
     },
     ...recentMessages
   ]
 }
 
 function buildSummaryContext(summary: string, history: Array<{ role: ModelMessage['role']; content: string }>): ModelMessage[] {
-  const messages = buildChatContext(summary, history)
+  const messages = [
+    {
+      role: 'system' as const,
+      content: summary.trim() ? `Conversation summary so far:\n${summary.trim()}` : 'No existing conversation summary.'
+    },
+    ...toModelMessages(history.slice(-RECENT_CONTEXT_MESSAGE_LIMIT))
+  ]
 
   return [
     {
@@ -426,15 +484,17 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         })
       }
 
-      const conversationSummary = await getConversationSummary(db, identity, params.conversationId)
+      const conversationContext = await getConversationContext(db, identity, params.conversationId)
 
-      if (conversationSummary === null) {
+      if (conversationContext === null) {
         return reply.status(404).send({
           error: 'CONVERSATION_NOT_FOUND',
           message: 'Conversation was not found.'
         })
       }
 
+      const appInstructions = await getAppInstructions(db, identity.appId)
+      const modelContext = buildChatContext({ appInstructions, conversation: conversationContext, history })
       const origin = request.headers.origin
 
       reply.hijack()
@@ -449,7 +509,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
       const routerStartedAt = Date.now()
       const route = await intentRouter.route({
         latestMessage: parsedBody.data.content,
-        messages: toModelMessages(history)
+        messages: modelContext
       })
 
       const routerProfile = route.source === 'model' ? modelProvider.getProfile('router') : undefined
@@ -619,7 +679,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
       try {
         for await (const chunk of modelProvider.streamChat({
           task: 'chat',
-          messages: buildChatContext(conversationSummary, history),
+          messages: modelContext,
           traceId: userMessage.traceId,
           userId: identity.externalUserId
         })) {
@@ -674,7 +734,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           conversationId: params.conversationId,
           messageId: userMessage.id,
           traceId: userMessage.traceId,
-          currentSummary: conversationSummary,
+          currentSummary: conversationContext.summary,
           history: summaryHistory
         })
         return reply

@@ -199,7 +199,7 @@ export async function getConversationMessages(db: Database, identity: AssistantU
     .orderBy(asc(schema.messages.createdAt))
 }
 
-export async function getConversationSummary(db: Database, identity: AssistantUserIdentity, conversationId: string) {
+export async function getConversationContext(db: Database, identity: AssistantUserIdentity, conversationId: string) {
   const conversation = await ensureOwnedConversation(db, identity, conversationId)
 
   if (!conversation) {
@@ -207,12 +207,24 @@ export async function getConversationSummary(db: Database, identity: AssistantUs
   }
 
   const [row] = await db
-    .select({ summary: schema.conversations.summary })
+    .select({
+      pageTitle: schema.conversations.pageTitle,
+      sourceUrl: schema.conversations.sourceUrl,
+      metadata: schema.conversations.metadata,
+      summary: schema.conversations.summary
+    })
     .from(schema.conversations)
     .where(eq(schema.conversations.id, conversationId))
     .limit(1)
 
-  return row?.summary ?? ''
+  return row
+    ? {
+        pageTitle: row.pageTitle,
+        sourceUrl: row.sourceUrl,
+        metadata: row.metadata ?? {},
+        summary: row.summary ?? ''
+      }
+    : null
 }
 
 export async function updateConversationSummary(

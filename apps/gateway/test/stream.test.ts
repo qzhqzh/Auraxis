@@ -79,6 +79,7 @@ async function cleanupAppData(appId: string) {
     await db.execute(sql`delete from tool_calls where app_id = ${appId}`)
     await db.execute(sql`delete from messages where conversation_id in (select id from conversations where app_id = ${appId})`)
     await db.execute(sql`delete from conversations where app_id = ${appId}`)
+    await db.execute(sql`delete from assistant_apps where app_id = ${appId}`)
   } finally {
     await pool.end()
   }
@@ -229,7 +230,13 @@ test('message stream sends summary plus recent message window to chat model', as
             'x-auraxis-app-id': appId
           },
           payload: {
-            pageTitle: 'Window Test'
+            pageTitle: 'Window Test',
+            sourceUrl: 'https://example.com/reports/RPT-123',
+            metadata: {
+              pageType: 'report_detail',
+              entityType: 'report',
+              entityId: 'RPT-123'
+            }
           }
         })
         assert.equal(createResponse.statusCode, 201)
@@ -237,6 +244,7 @@ test('message stream sends summary plus recent message window to chat model', as
 
         const { db, pool } = createDatabaseClient(config)
         try {
+          await db.execute(sql`insert into assistant_apps (app_id, name, settings) values (${appId}, 'Window Test App', ${JSON.stringify({ appInstructions: 'You are a report system assistant. Do not invent report facts.' })}::jsonb)`)
           await db.execute(sql`update conversations set summary = 'Earlier summary for windowing.' where id = ${conversationId}`)
         } finally {
           await pool.end()
@@ -272,6 +280,8 @@ test('message stream sends summary plus recent message window to chat model', as
         assert.equal(streamResponse.statusCode, 200)
         assert.equal(chatMessages.length, 21)
         assert.equal(chatMessages[0]?.role, 'system')
+        assert.match(chatMessages[0]?.content ?? '', /report system assistant/)
+        assert.match(chatMessages[0]?.content ?? '', /RPT-123/)
         assert.match(chatMessages[0]?.content ?? '', /Earlier summary for windowing/)
         assert.equal(chatMessages[1]?.content, 'history 7')
         assert.equal(chatMessages.at(-1)?.content, 'current message')
