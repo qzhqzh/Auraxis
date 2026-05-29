@@ -32,3 +32,8 @@ docker compose run --rm gateway bun run db:migrate
 
 - PostgreSQL data is stored with a bind mount at `.data/postgres`; this project does not use Docker volumes.
 - DeepSeek credentials are configured through `.env`; do not commit real API keys.
+
+
+## Codex Handoff
+
+When continuing work in a fresh Codex session, start with [codex-handoff.md](./codex-handoff.md). It records the current branch, recent commits, local startup commands, verification commands, and the recommended next task.
