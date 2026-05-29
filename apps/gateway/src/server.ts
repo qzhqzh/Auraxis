@@ -92,6 +92,17 @@ function matchConversationOwner(identity: { appId: string; tenantId?: string; ex
   )
 }
 
+function isUnsupportedReminderRequest(content: string) {
+  const normalizedContent = content.toLowerCase()
+  const asksToRemember = /记住|记得|提醒|remind|remember/.test(normalizedContent)
+  const hasReminderTime = /周末|明天|后天|今天|今晚|早上|下午|晚上|星期|周[一二三四五六日天]|点|分钟|小时|weekend|tomorrow/.test(normalizedContent)
+
+  return asksToRemember && hasReminderTime
+}
+
+function unsupportedReminderMessage() {
+  return '我现在还没有长期记忆、定时提醒或主动推送功能，所以不能真正保存这件事，也不能在周末自动提醒你。当前对话里我可以继续参考你刚刚说的内容；如果要做可持久提醒，需要后续接入受控的 reminder/memory 工具。'
+}
 
 function sendHostTokenError(reply: FastifyReply, error: HostTokenError) {
   return reply.status(error.statusCode).send({
@@ -337,6 +348,30 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         })
 
         reply.raw.write(`data: ${JSON.stringify({ delta: followUpMessage })}\n\n`)
+        reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
+        reply.raw.end()
+        return reply
+      }
+
+      if (isUnsupportedReminderRequest(parsedBody.data.content)) {
+        const message = unsupportedReminderMessage()
+
+        await writeAgentTrace(db, {
+          traceId: userMessage.traceId,
+          appId: identity.appId,
+          conversationId: params.conversationId,
+          messageId: userMessage.id,
+          phase: 'model',
+          status: 'succeeded',
+          payload: { skipped: true, reason: 'unsupported_reminder_memory' },
+          durationMs: 0
+        })
+
+        await appendAssistantMessage(db, identity, params.conversationId, {
+          content: message
+        })
+
+        reply.raw.write(`data: ${JSON.stringify({ delta: message })}\n\n`)
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
         reply.raw.end()
         return reply

@@ -186,6 +186,102 @@ test('message stream route writes user and assistant messages and returns sse ch
   }
 })
 
+test('message stream does not promise unsupported reminders or memory', async () => {
+  const appId = `unsupported-reminder-${randomUUID()}`
+  const token = createToken(appId, 'user-a')
+  const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
+    async *streamChat() {
+      yield 'should-not-run'
+    }
+  }
+
+  await cleanupAppData(appId)
+
+  try {
+    await withServer(provider, async (server) => {
+      const createResponse = await server.inject({
+        method: 'POST',
+        url: '/v1/conversations',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        },
+        payload: {
+          pageTitle: 'Unsupported Reminder Test'
+        }
+      })
+
+      assert.equal(createResponse.statusCode, 201)
+      const conversationId = createResponse.json().conversation.id as string
+
+      const streamResponse = await server.inject({
+        method: 'POST',
+        url: `/v1/conversations/${conversationId}/messages:stream`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        },
+        payload: {
+          content: '记住提醒我周末去买菜'
+        }
+      })
+
+      assert.equal(streamResponse.statusCode, 200)
+      assert.match(streamResponse.body, /没有长期记忆、定时提醒或主动推送功能/)
+      assert.match(streamResponse.body, /event: done/)
+      assert.doesNotMatch(streamResponse.body, /should-not-run/)
+      assert.doesNotMatch(streamResponse.body, /我会记住/)
+
+      const messagesResponse = await server.inject({
+        method: 'GET',
+        url: `/v1/conversations/${conversationId}/messages`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        }
+      })
+
+      assert.equal(messagesResponse.statusCode, 200)
+      const messages = messagesResponse.json().messages as Array<{ role: string; content: string }>
+      assert.equal(messages.length, 2)
+      assert.equal(messages[0]?.role, 'user')
+      assert.equal(messages[1]?.role, 'assistant')
+      assert.match(messages[1]?.content ?? '', /没有长期记忆、定时提醒或主动推送功能/)
+
+      const tracesResponse = await server.inject({
+        method: 'GET',
+        url: `/v1/conversations/${conversationId}/traces`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-auraxis-app-id': appId
+        }
+      })
+
+      assert.equal(tracesResponse.statusCode, 200)
+      const traces = tracesResponse.json().traces as Array<{ phase: string; status: string; payload?: Record<string, unknown> }>
+      assert.deepEqual(
+        traces.map((trace) => `${trace.phase}:${trace.status}`),
+        ['router:succeeded', 'model:succeeded']
+      )
+      assert.deepEqual(traces[1]?.payload, { skipped: true, reason: 'unsupported_reminder_memory' })
+    })
+  } finally {
+    await cleanupAppData(appId)
+  }
+})
+
 test('message stream route asks a follow-up when router confidence is low', async () => {
   const appId = `stream-follow-up-${randomUUID()}`
   const token = createToken(appId, 'user-a')
