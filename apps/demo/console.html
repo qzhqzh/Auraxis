@@ -108,6 +108,16 @@
       .message.assistant { border-left-color: #2f8f5b; }
       .message-role { font-size: 12px; font-weight: 700; color: #4b5563; margin-bottom: 4px; }
       .message-content { white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
+      .message-traces { margin-top: 10px; display: grid; gap: 8px; }
+      .message-trace {
+        border: 1px solid #dce3ea;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 8px;
+      }
+      .message-trace.warning { border-color: #fbbf24; background: #fffbeb; }
+      .message-trace.danger { border-color: #fca5a5; background: #fff1f2; }
+      .trace-details summary { cursor: pointer; color: #667085; font-size: 12px; margin-top: 6px; }
       .summary-box {
         border: 1px solid #dce3ea;
         border-radius: 8px;
@@ -171,7 +181,7 @@
         <div class="grid">
           <section class="card stack">
             <div>
-              <h2>Messages</h2>
+              <h2>Messages + Traces</h2>
               <p id="conversationMeta" class="muted">Select a conversation.</p>
             </div>
             <div class="summary-box">
@@ -182,8 +192,8 @@
           </section>
           <section class="card stack">
             <div>
-              <h2>Traces</h2>
-              <p class="muted">Router, model, and tool phases for the selected conversation.</p>
+              <h2>All Traces</h2>
+              <p class="muted">Raw trace list for the selected conversation.</p>
             </div>
             <div id="traces"></div>
           </section>
@@ -266,12 +276,45 @@
         })
       }
 
-      function renderMessages(messages) {
+      function groupTracesByMessage(traces) {
+        return traces.reduce((groups, trace) => {
+          const messageId = trace.messageId || '__unlinked__'
+          if (!groups.has(messageId)) groups.set(messageId, [])
+          groups.get(messageId).push(trace)
+          return groups
+        }, new Map())
+      }
+
+      function renderMessageTraces(traces) {
+        if (!traces.length) {
+          return '<div class="message-traces"><p class="muted">No traces for this message.</p></div>'
+        }
+
+        return `<div class="message-traces">
+          ${traces.map((trace) => {
+            const durationMs = typeof trace.durationMs === 'number' ? trace.durationMs : 0
+            const level = latencyLevel(durationMs)
+            return `
+              <div class="message-trace ${level}">
+                ${renderTraceSummary(trace)}
+                <details class="trace-details">
+                  <summary>Payload</summary>
+                  <pre>${pretty(trace.error || trace.payload || {})}</pre>
+                </details>
+              </div>
+            `
+          }).join('')}
+        </div>`
+      }
+
+      function renderMessages(messages, traces) {
+        const tracesByMessage = groupTracesByMessage(traces)
         $('messages').innerHTML = messages.length
           ? messages.map((message) => `
               <div class="message ${escapeHtml(message.role)}">
-                <div class="message-role">${escapeHtml(message.role)} · ${new Date(message.createdAt).toLocaleString()}</div>
+                <div class="message-role">${escapeHtml(message.role)} · ${new Date(message.createdAt).toLocaleString()} · ${escapeHtml(message.id)}</div>
                 <div class="message-content">${escapeHtml(message.content)}</div>
+                ${renderMessageTraces(tracesByMessage.get(message.id) || [])}
               </div>
             `).join('')
           : '<p class="muted">No messages.</p>'
@@ -367,7 +410,7 @@
           request(`/v1/conversations/${conversationId}/messages`),
           request(`/v1/conversations/${conversationId}/traces`)
         ])
-        renderMessages(messagesPayload.messages || [])
+        renderMessages(messagesPayload.messages || [], tracesPayload.traces || [])
         renderTraces(tracesPayload.traces || [])
       }
 
@@ -390,7 +433,7 @@
             await selectConversation(state.activeConversationId)
           } else {
             renderConversationSummary(null)
-            renderMessages([])
+            renderMessages([], [])
             renderTraces([])
           }
         } catch (error) {
