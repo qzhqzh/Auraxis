@@ -12,6 +12,16 @@ Last updated: 2026-05-29
 
 Recent commits, newest first:
 
+- `80e4b6b feat: compose tool responses with model`
+  - Tool results keep raw ToolCall/tool trace output, while user-facing text is generated with `ModelTask.response_compose`.
+  - Compose failure falls back to the previous deterministic formatter and records `model:failed`.
+- `d07d63a feat: build model context from app and page data`
+  - Router and chat now share a Context Builder output: app instructions, page context, conversation summary, and recent messages.
+  - App instructions can come from `assistant_apps.settings.appInstructions`, `instructions`, or `assistantInstructions`.
+- `678d249 fix: do not block chat done on summary`
+  - SSE `done` is sent before background summary refresh, so the user can continue asking without waiting for summary generation.
+- `37389ef docs: update handoff for summary windowing`
+  - Updated architecture and handoff docs after summary/windowing landed.
 - `2e7e468 fix: scroll assistant to latest messages`
   - The Vue widget scrolls the messages container to the newest message after restoring history, opening the panel, sending, streaming deltas, and final message reload.
 - `b0bdace feat: link console traces to messages`
@@ -71,13 +81,16 @@ Recent commits, newest first:
   - system status questions match a rule and call `system.check_status` when permitted.
   - obvious casual chat skips the Router model.
   - other messages call DeepSeek JSON Router through `ModelProvider.generateJson({ task: 'router' })`.
+  - Router receives the same Context Builder output as chat: app instructions, page context, summary, and recent messages.
 - Tool runtime flow:
   - internal tool metadata and executor helpers live in `apps/gateway/src/tools.ts`.
   - `GET /v1/tools` returns `internalTools`.
   - `server.ts` handles policy outcome, ToolCall persistence, trace writing, SSE, and assistant message persistence.
+  - successful tool results are composed through `ModelTask.response_compose`; compose failure falls back to deterministic formatting.
 - Model flow:
   - chat replies stream through `ModelProvider.streamChat({ task: 'chat' })`.
-  - chat context is built from conversation summary plus the latest 20 messages.
+  - chat context is built from Context Builder system context plus the latest 20 messages.
+  - Context Builder includes app instructions, page context, conversation summary, and recent messages.
   - long conversations refresh summary through `ModelProvider.generateJson({ task: 'summary' })`.
   - model traces include `task`, `provider`, `model`, `firstDeltaMs`, `deltaCount`, `contentLength`, and `durationMs`.
   - summary traces record `summary:succeeded` or `summary:failed` without interrupting the user reply.
@@ -162,7 +175,7 @@ docker compose exec -T gateway bun run typecheck
 
 Latest verified results before this handoff:
 
-- `test:gateway`: 24 pass, 0 fail
+- `test:gateway`: 25 pass, 0 fail
 - `typecheck`: passed
 - `bun --cwd packages/vue build`: passed
 - End-to-end tool validation through demo host and Gateway API:
@@ -187,13 +200,11 @@ Latest verified results before this handoff:
 
 ## Recommended Next Task
 
-The current branch is at a coherent checkpoint for the MVP runtime: auth, conversations, streaming chat, router, one internal diagnostic tool, ToolCall logging, traces, conversation summary/windowing, read-only console, LAN demo access, user-isolated demo testing, and API-level end-to-end tool validation are in place.
+The current branch is at a coherent checkpoint for the MVP runtime: auth, conversations, streaming chat, router, one internal diagnostic tool, ToolCall logging, traces, conversation summary/windowing, Context Builder, response composition for tool results, read-only console, LAN demo access, user-isolated demo testing, and API-level validation are in place.
 
-Recommended next direction depends on product priority:
+Recommended next action: open a checkpoint PR for this branch before adding MCP, dynamic tool configuration, or multi-step agent loops.
 
-- Option B: add response composition for tool results through `ModelTask.response_compose`, so tool output can be turned into a more natural assistant reply while preserving raw ToolCall/trace records.
-- Option C: design the backend-only ToolDefinition API surface before any dynamic UI, but do not implement arbitrary tool editing yet.
-- Option D: do no new feature work on this branch; open a PR for the current MVP runtime checkpoint.
+After this checkpoint, the next implementation branch should probably extract a formal `ToolObservation` abstraction for internal tools and future MCP tools.
 
 Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs backend API and policy design first.
 
@@ -202,7 +213,7 @@ Do not start dynamic ToolDefinition editing in the UI yet. Tool config needs bac
 Use this when opening a new Codex session:
 
 ```text
-你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，MVP runtime 已具备 auth、conversation、streaming chat、Router、system.check_status internal tool、ToolCall、agent trace、Conversation Summary + Windowing、只读 console、LAN demo access 和用户隔离 demo 测试，并已通过 API 级端到端工具流验收。下一步不要直接做动态工具配置 UI；先和用户确认产品方向：B 做 response_compose 工具结果回复整合，C 设计后端 ToolDefinition API 边界，或 D 当前分支不开新功能、直接准备 PR。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
+你在 /home/zhuqin/star/app/Auraxis 工作。请先阅读 docs/codex-handoff.md、docs/development.md、docs/assistant-architecture.md，并按 EchoMe/AGENTS 约定先查相关记忆。当前分支是 feat/15-internal-tool-runtime，MVP runtime 已具备 auth、conversation、streaming chat、Router、system.check_status internal tool、ToolCall、agent trace、Conversation Summary + Windowing、Context Builder、response_compose 工具结果回复、只读 console、LAN demo access 和用户隔离 demo 测试，并已通过 API 级验证。当前建议先开 checkpoint PR，不要继续往此分支塞 MCP、动态工具配置或多步 agent loop。若继续开发，下一分支优先抽象 ToolObservation。改动前先简短说明思路，完成后运行 docker compose exec -T gateway bun run test:gateway 和 docker compose exec -T gateway bun run typecheck，最后 conventional commit。
 ```
 
 ## Guardrails
