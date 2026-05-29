@@ -241,6 +241,7 @@ export const AuraxisAssistant = defineComponent({
     const activeConversationId = ref<string | null>(null)
     const token = ref<string | null>(null)
     const composerRef = ref<HTMLInputElement | null>(null)
+    const messagesRef = ref<HTMLDivElement | null>(null)
 
     function getHeaders() {
       return {
@@ -267,10 +268,18 @@ export const AuraxisAssistant = defineComponent({
       return payload
     }
 
+    async function scrollMessagesToBottom() {
+      await nextTick()
+      if (messagesRef.value) {
+        messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+      }
+    }
+
     async function loadMessages(conversationId: string) {
       const payload = await request<{ messages: Message[] }>(`/v1/conversations/${conversationId}/messages`)
       messages.value = payload.messages
       activeConversationId.value = conversationId
+      await scrollMessagesToBottom()
     }
 
     async function ensureConversation() {
@@ -382,7 +391,7 @@ export const AuraxisAssistant = defineComponent({
       }
 
       await bootstrap()
-      await nextTick()
+      await scrollMessagesToBottom()
       composerRef.value?.focus()
     }
 
@@ -434,6 +443,7 @@ export const AuraxisAssistant = defineComponent({
           createdAt: now
         }
       ]
+      await scrollMessagesToBottom()
 
       try {
         draft.value = ''
@@ -448,6 +458,7 @@ export const AuraxisAssistant = defineComponent({
 
           if (pending) {
             pending.content += delta
+            void scrollMessagesToBottom()
           }
         })
 
@@ -458,7 +469,7 @@ export const AuraxisAssistant = defineComponent({
         await loadMessages(conversationId).catch(() => undefined)
       } finally {
         isSending.value = false
-        await nextTick()
+        await scrollMessagesToBottom()
         composerRef.value?.focus()
       }
     }
@@ -502,7 +513,7 @@ export const AuraxisAssistant = defineComponent({
                 errorText.value ? h('div', { class: 'auraxis-assistant__error' }, errorText.value) : null,
                 h(
                   'div',
-                  { class: 'auraxis-assistant__messages' },
+                  { ref: messagesRef, class: 'auraxis-assistant__messages' },
                   messages.value.length
                     ? messages.value.map((message) =>
                         h(
