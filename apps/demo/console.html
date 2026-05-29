@@ -108,6 +108,13 @@
       .message.assistant { border-left-color: #2f8f5b; }
       .message-role { font-size: 12px; font-weight: 700; color: #4b5563; margin-bottom: 4px; }
       .message-content { white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
+      .summary-box {
+        border: 1px solid #dce3ea;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 10px;
+      }
+      .summary-content { white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
 
       pre {
         max-height: 320px;
@@ -166,6 +173,10 @@
             <div>
               <h2>Messages</h2>
               <p id="conversationMeta" class="muted">Select a conversation.</p>
+            </div>
+            <div class="summary-box">
+              <h3>Summary</h3>
+              <div id="conversationSummary" class="summary-content muted">No summary.</div>
             </div>
             <div id="messages" class="stack"></div>
           </section>
@@ -266,6 +277,12 @@
           : '<p class="muted">No messages.</p>'
       }
 
+      function renderConversationSummary(conversation) {
+        const summary = conversation?.summary?.trim()
+        $('conversationSummary').className = summary ? 'summary-content' : 'summary-content muted'
+        $('conversationSummary').textContent = summary || 'No summary.'
+      }
+
       function latencyLevel(durationMs) {
         if (durationMs >= 8000) return 'danger'
         if (durationMs >= 3000) return 'warning'
@@ -345,6 +362,7 @@
         $('conversationMeta').textContent = conversation
           ? `${conversation.id} · ${conversation.externalUserId || 'user'} · ${conversation.status}`
           : conversationId
+        renderConversationSummary(conversation)
         const [messagesPayload, tracesPayload] = await Promise.all([
           request(`/v1/conversations/${conversationId}/messages`),
           request(`/v1/conversations/${conversationId}/traces`)
@@ -371,6 +389,7 @@
           if (state.activeConversationId) {
             await selectConversation(state.activeConversationId)
           } else {
+            renderConversationSummary(null)
             renderMessages([])
             renderTraces([])
           }
