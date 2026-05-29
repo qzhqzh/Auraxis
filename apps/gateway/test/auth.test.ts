@@ -18,6 +18,16 @@ const config: AppConfig = {
   databaseUrl: 'postgres://auraxis:change-me-local-dev@postgres:5432/auraxis',
   deepSeekBaseUrl: 'https://api.deepseek.com',
   deepSeekModel: 'deepseek-v4-flash',
+  modelProfiles: {
+    router: {
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash'
+    },
+    chat: {
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro'
+    }
+  },
   hostTokenIssuer: 'auraxis-dev-host',
   hostTokenSecret: secret
 }

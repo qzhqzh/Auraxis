@@ -16,7 +16,7 @@ import {
 import { createDatabaseClient } from './db/client.js'
 import * as schema from './db/schema.js'
 import { createDeepSeekModelProvider, ModelProvider, ModelProviderError } from './model.js'
-import { createDeepSeekIntentRouter, IntentRouter, shouldAskRouteFollowUp } from './router.js'
+import { createModelIntentRouter, IntentRouter, shouldAskRouteFollowUp } from './router.js'
 
 const GATEWAY_VERSION = '0.1.0'
 const createConversationSchema = z
@@ -221,7 +221,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
   })
   const { db, pool } = createDatabaseClient(config)
   const modelProvider = options.modelProvider ?? createDeepSeekModelProvider(config)
-  const intentRouter = options.intentRouter ?? createDeepSeekIntentRouter(config)
+  const intentRouter = options.intentRouter ?? createModelIntentRouter(modelProvider)
 
   server.register(cors, {
     origin: true
@@ -404,6 +404,8 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         }))
       })
 
+      const routerProfile = route.source === 'model' ? modelProvider.getProfile('router') : undefined
+
       await writeAgentTrace(db, {
         traceId: userMessage.traceId,
         appId: identity.appId,
@@ -411,7 +413,12 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
         messageId: userMessage.id,
         phase: 'router',
         status: 'succeeded',
-        payload: { route },
+        payload: {
+          route,
+          task: routerProfile ? 'router' : undefined,
+          model: routerProfile?.model,
+          provider: routerProfile?.provider
+        },
         durationMs: Date.now() - routerStartedAt
       })
 
@@ -537,6 +544,7 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
 
       try {
         for await (const chunk of modelProvider.streamChat({
+          task: 'chat',
           messages: history.map((message) => ({
             role: message.role,
             content: message.content
@@ -548,6 +556,8 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           reply.raw.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`)
         }
 
+        const chatProfile = modelProvider.getProfile('chat')
+
         await writeAgentTrace(db, {
           traceId: userMessage.traceId,
           appId: identity.appId,
@@ -555,7 +565,12 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           messageId: userMessage.id,
           phase: 'model',
           status: 'succeeded',
-          payload: { model: config.deepSeekModel, contentLength: assistantContent.length },
+          payload: {
+            task: 'chat',
+            model: chatProfile.model,
+            provider: chatProfile.provider,
+            contentLength: assistantContent.length
+          },
           durationMs: Date.now() - modelStartedAt
         })
 

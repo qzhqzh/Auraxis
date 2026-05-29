@@ -1,5 +1,4 @@
-import type { AppConfig } from './config.js'
-import type { ModelMessage } from './model.js'
+import type { ModelMessage, ModelProvider } from './model.js'
 
 const ROUTER_CONFIDENCE_THRESHOLD = 0.6
 
@@ -21,14 +20,6 @@ export type RouteInput = {
 
 export type IntentRouter = {
   route(input: RouteInput): Promise<RouteDecision>
-}
-
-type DeepSeekRouterResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string
-    }
-  }>
 }
 
 type DeepSeekRoutePayload = {
@@ -119,9 +110,7 @@ export function shouldAskRouteFollowUp(route: RouteDecision): boolean {
   return route.source !== 'fallback' && route.confidence < ROUTER_CONFIDENCE_THRESHOLD
 }
 
-export function createDeepSeekIntentRouter(
-  config: Pick<AppConfig, 'deepSeekApiKey' | 'deepSeekBaseUrl' | 'deepSeekModel'>
-): IntentRouter {
+export function createModelIntentRouter(modelProvider: ModelProvider): IntentRouter {
   return {
     async route(input) {
       const ruleMatch = matchRuleIntent(input.latestMessage)
@@ -130,21 +119,10 @@ export function createDeepSeekIntentRouter(
         return ruleMatch
       }
 
-      if (!config.deepSeekApiKey) {
-        return createFallbackDecision()
-      }
-
-      const response = await fetch(`${config.deepSeekBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${config.deepSeekApiKey}`,
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: config.deepSeekModel,
-          response_format: {
-            type: 'json_object'
-          },
+      try {
+        const payload = await modelProvider.generateJson({
+          task: 'router',
+          traceId: 'router',
           messages: [
             {
               role: 'system',
@@ -152,28 +130,8 @@ export function createDeepSeekIntentRouter(
             }
           ]
         })
-      })
 
-      if (!response.ok) {
-        return createFallbackDecision()
-      }
-
-      let payload: DeepSeekRouterResponse
-
-      try {
-        payload = (await response.json()) as DeepSeekRouterResponse
-      } catch {
-        return createFallbackDecision()
-      }
-
-      const content = payload.choices?.[0]?.message?.content
-
-      if (!content) {
-        return createFallbackDecision()
-      }
-
-      try {
-        return normalizeRoutePayload(JSON.parse(content) as DeepSeekRoutePayload)
+        return normalizeRoutePayload(payload as DeepSeekRoutePayload)
       } catch {
         return createFallbackDecision()
       }

@@ -13,6 +13,7 @@ import type { IntentRouter } from '../src/router.js'
 import { buildServer } from '../src/server.js'
 
 const secret = '12345678901234567890123456789012'
+const testModelProfile = { provider: 'deepseek' as const, model: 'test-model' }
 
 const config: AppConfig = {
   nodeEnv: 'test',
@@ -22,6 +23,16 @@ const config: AppConfig = {
   databaseUrl: 'postgres://auraxis:change-me-local-dev@postgres:5432/auraxis',
   deepSeekBaseUrl: 'https://api.deepseek.com',
   deepSeekModel: 'deepseek-v4-flash',
+  modelProfiles: {
+    router: {
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash'
+    },
+    chat: {
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro'
+    }
+  },
   hostTokenIssuer: 'auraxis-dev-host',
   hostTokenSecret: secret
 }
@@ -77,6 +88,18 @@ test('message stream route writes user and assistant messages and returns sse ch
   const appId = `stream-test-${randomUUID()}`
   const token = createToken(appId, 'user-a')
   const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
     async *streamChat() {
       yield 'Hello'
       yield ' world'
@@ -164,6 +187,18 @@ test('message stream route asks a follow-up when router confidence is low', asyn
   const appId = `stream-follow-up-${randomUUID()}`
   const token = createToken(appId, 'user-a')
   const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
     async *streamChat() {
       yield 'should-not-run'
     }
@@ -246,6 +281,18 @@ test('tools endpoint lists system check tool for authenticated users', async () 
   const appId = `tools-list-${randomUUID()}`
   const token = createToken(appId, 'user-a')
   const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
     async *streamChat() {
       yield 'unused'
     }
@@ -273,6 +320,18 @@ test('message stream executes system check tool and records tool call', async ()
   const appId = `system-check-${randomUUID()}`
   const token = createToken(appId, 'user-a', 'hospital_a', ['assistant:chat', 'tool:system.check_status'])
   const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
     async *streamChat() {
       yield 'should-not-run'
     }
@@ -371,6 +430,18 @@ test('message stream denies system check without permission', async () => {
   const appId = `system-check-denied-${randomUUID()}`
   const token = createToken(appId, 'user-a')
   const provider: ModelProvider = {
+    getProfile() {
+      return testModelProfile
+    },
+    async generateJson() {
+      return {
+        intent: 'general_chat',
+        confidence: 0.9,
+        requires_tool: false,
+        candidate_tools: [],
+        entities: {}
+      }
+    },
     async *streamChat() {
       yield 'should-not-run'
     }
