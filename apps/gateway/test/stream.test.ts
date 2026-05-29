@@ -176,7 +176,10 @@ test('message stream route writes user and assistant messages and returns sse ch
         traces.map((trace) => `${trace.phase}:${trace.status}`),
         ['router:succeeded', 'model:succeeded']
       )
-      assert.equal((traces[1]?.payload as { contentLength?: number } | undefined)?.contentLength, 'Hello world'.length)
+      const modelPayload = traces[1]?.payload as { contentLength?: number; deltaCount?: number; firstDeltaMs?: number } | undefined
+      assert.equal(modelPayload?.contentLength, 'Hello world'.length)
+      assert.equal(modelPayload?.deltaCount, 2)
+      assert.equal(typeof modelPayload?.firstDeltaMs, 'number')
     })
   } finally {
     await cleanupAppData(appId)

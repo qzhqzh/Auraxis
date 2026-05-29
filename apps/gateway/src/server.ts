@@ -540,6 +540,8 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
       }
 
       let assistantContent = ''
+      let firstDeltaMs: number | undefined
+      let deltaCount = 0
       const modelStartedAt = Date.now()
 
       try {
@@ -552,6 +554,11 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           traceId: userMessage.traceId,
           userId: identity.externalUserId
         })) {
+          if (firstDeltaMs === undefined) {
+            firstDeltaMs = Date.now() - modelStartedAt
+          }
+
+          deltaCount += 1
           assistantContent += chunk
           reply.raw.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`)
         }
@@ -569,6 +576,8 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
             task: 'chat',
             model: chatProfile.model,
             provider: chatProfile.provider,
+            firstDeltaMs: firstDeltaMs ?? null,
+            deltaCount,
             contentLength: assistantContent.length
           },
           durationMs: Date.now() - modelStartedAt
@@ -580,6 +589,8 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
 
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ ok: true })}\n\n`)
       } catch (error) {
+        const chatProfile = modelProvider.getProfile('chat')
+
         await writeAgentTrace(db, {
           traceId: userMessage.traceId,
           appId: identity.appId,
@@ -587,6 +598,14 @@ export function buildServer(config: AppConfig, options: BuildServerOptions = {})
           messageId: userMessage.id,
           phase: 'model',
           status: 'failed',
+          payload: {
+            task: 'chat',
+            model: chatProfile.model,
+            provider: chatProfile.provider,
+            firstDeltaMs: firstDeltaMs ?? null,
+            deltaCount,
+            contentLength: assistantContent.length
+          },
           error: errorPayload(error),
           durationMs: Date.now() - modelStartedAt
         })
